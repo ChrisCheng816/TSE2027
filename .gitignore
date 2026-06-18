@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.zip
+*.tar
+.venv/
+venv/
+.cache/
+logs/
+cache/
+tests/

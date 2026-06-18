@@ -1,0 +1,1 @@
+"""Direct-generation prompt templates."""
