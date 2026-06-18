@@ -23,6 +23,7 @@ DEFAULT_BUDGETS = (10000, 15000, 20000)
 DATASET = "bigcodebench-v0.1.4"
 ARMS = ("A0", "A1", "A2")
 ARM_LABEL = {"A0": "Direct Coding", "A1": "Plan-Structured Coding", "A2": "Test-Guided Repair"}
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 RQ2_TABLE = {
     "qwen3-30b": {
@@ -255,8 +256,15 @@ def random_runs(repo_root: Path, model: str, budget: int, dataset: str) -> list[
     return [load_run(path) for path in paths]
 
 
+def display_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def files_for_run(run: RunArrays) -> tuple[str, ...]:
-    return tuple() if run.path is None else (str(run.path),)
+    return tuple() if run.path is None else (display_path(run.path),)
 
 
 def metric_value(run: RunArrays, metric: str) -> float:
@@ -359,7 +367,7 @@ def choice_from_runs(name: str, runs: Iterable[RunArrays], metric: str, table_pt
             raise AssertionError(f"task ids do not align for {name}: {runs[0].name} vs {run.name}")
     series = np.column_stack([metric_series(run, metric) for run in runs])
     actual_pt = float(np.nanmean(series)) if metric == "cost" else 100.0 * float(np.nanmean(series))
-    files = tuple(str(run.path) for run in runs if run.path is not None)
+    files = tuple(display_path(run.path) for run in runs if run.path is not None)
     return SeriesChoice(
         name=name,
         files=files,
