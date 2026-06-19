@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .arms import get_arm_choices, get_partition_arms, normalize_arm_ids
-from .bandits import (
+from .adaptive import (
     KNNArmBudgetAllocator,
     build_partition_selector,
     normalize_selector_algorithm,
@@ -85,7 +85,7 @@ def _run_config(config: ExperimentConfig, *, args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Code-generation experiment runner with contextual bandit routing."
+        description="Code-generation experiment runner with adaptive workflow routing."
     )
     parser.add_argument(
         "--run-mode",

@@ -9,7 +9,7 @@ from .arms import (
     get_upgrade_arms,
     normalize_arm_ids,
 )
-from .bandits import KNNRewardSumUCBSelector, normalize_selector_algorithm
+from .adaptive import KNNRewardSumUCBSelector, normalize_selector_algorithm
 from .config import (
     DEFAULT_EXPERIMENT_CONFIG,
     AdaptiveConfig,

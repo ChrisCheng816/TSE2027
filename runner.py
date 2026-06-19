@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from .arms import DEFAULT_PIPELINE_ARMS, PipelineArm, build_prompt_bundle
-from .bandits import selector_apply_update
+from .adaptive import selector_apply_update
 from .config import AdaptiveConfig, RewardConfig, adaptive_per_task_completion_token_budget
 from .evaluator import estimate_pass_at_k, evaluate_completion, evaluate_self_test_completion
 from .features import BigCodeBenchFeatureExtractor
