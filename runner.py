@@ -163,6 +163,138 @@ class ExperimentRunner:
                 on_arm_complete(arm, arm_records[arm.arm_id])
         return arm_records
 
+    def run_repeated_sampling(
+        self,
+        tasks: list[CodeGenTask],
+        *,
+        arm: PipelineArm,
+        num_samples_per_task: int,
+        pass_k: int,
+        evaluation_timeout_sec: int,
+        on_batch_complete: Callable[[list[GenerationRecord], list[GenerationRecord]], None] | None = None,
+    ) -> list[GenerationRecord]:
+        self._validate_sampling_request(num_samples_per_task=num_samples_per_task, pass_k=pass_k)
+        records: list[GenerationRecord] = []
+        batch_records: list[GenerationRecord] = []
+        resolved_batch_size = max(self.batch_size, 1)
+
+        for task_index, task in enumerate(tasks, 1):
+            task_budget = self._task_completion_budget(
+                reference_completion_tokens=self.model_client.count_tokens(
+                    _visible_task_budget_reference(task) or ""
+                ),
+            )
+            remaining_budget = int(task_budget)
+            combined_steps: list[AttemptStep] = []
+            execution_trace: list[dict[str, Any]] = []
+            attempt_index = 0
+
+            while remaining_budget > 0:
+                attempt_index += 1
+                allocated_cap = remaining_budget
+                arm_steps = self._run_arm_once_with_completion_cap(
+                    task=task,
+                    arm=arm,
+                    evaluation_timeout_sec=evaluation_timeout_sec,
+                    completion_token_cap=allocated_cap,
+                )
+                actual_completion_tokens = sum(step.output.completion_tokens for step in arm_steps)
+                actual_accounted_completion_tokens = sum(
+                    self._step_accounted_completion_tokens(step) for step in arm_steps
+                )
+                actual_total_tokens = self._steps_total_token_cost(arm_steps)
+                actual_knn_total_tokens = self._steps_knn_total_token_cost(arm_steps)
+                over_allocated_cap = actual_total_tokens > allocated_cap
+                charged_token_usage = int(allocated_cap) if over_allocated_cap else actual_total_tokens
+                if over_allocated_cap:
+                    arm_steps = _mark_bara_steps_over_cap_failure(
+                        arm_steps,
+                        allocated_cap=allocated_cap,
+                        actual_total_tokens=actual_total_tokens,
+                    )
+                solved = not over_allocated_cap and bool((arm_steps[-1].evaluation or {}).get("passed"))
+                annotated_steps = [
+                    replace(
+                        step,
+                        details={
+                            **dict(step.details),
+                            "repeated_sampling": True,
+                            "repeated_sampling_attempt_index": attempt_index,
+                            "repeated_sampling_allocated_token_cap": allocated_cap,
+                            "repeated_sampling_actual_completion_tokens": actual_completion_tokens,
+                            "repeated_sampling_actual_accounted_completion_tokens": actual_accounted_completion_tokens,
+                            "repeated_sampling_actual_total_tokens": actual_total_tokens,
+                            "repeated_sampling_actual_knn_total_tokens": actual_knn_total_tokens,
+                            "repeated_sampling_charged_token_usage": charged_token_usage,
+                            "repeated_sampling_over_allocated_token_cap": over_allocated_cap,
+                            "repeated_sampling_remaining_budget_before": remaining_budget,
+                            "repeated_sampling_remaining_budget_after": max(remaining_budget - charged_token_usage, 0),
+                        },
+                    )
+                    for step in arm_steps
+                ]
+                combined_steps.extend(annotated_steps)
+                execution_trace.append(
+                    {
+                        "arm_id": arm.arm_id,
+                        "attempt_index": attempt_index,
+                        "allocated_token_cap": allocated_cap,
+                        "actual_completion_tokens": actual_completion_tokens,
+                        "actual_accounted_completion_tokens": actual_accounted_completion_tokens,
+                        "actual_total_tokens": actual_total_tokens,
+                        "actual_knn_total_tokens": actual_knn_total_tokens,
+                        "charged_token_usage": charged_token_usage,
+                        "over_allocated_token_cap": over_allocated_cap,
+                        "passed": solved,
+                        "generation_duration_sec": sum(step.generation_duration_sec for step in arm_steps),
+                    }
+                )
+                remaining_budget = max(remaining_budget - charged_token_usage, 0)
+                if solved:
+                    break
+
+            record = self._build_record(
+                task=task,
+                final_arm=arm,
+                feature_result=None,
+                steps=combined_steps,
+                pass_k=pass_k,
+                selection_reason={},
+                metadata={
+                    "arm_hypothesis": arm.hypothesis,
+                    "pipeline_stage": arm.stage,
+                    "reward_formula": _reward_formula_description(self.reward_config),
+                    "reward_weights": _reward_weight_dict(self.reward_config),
+                    "repeated_sampling": True,
+                    "repeated_sampling_execution_trace": execution_trace,
+                    "repeated_sampling_attempt_count": attempt_index,
+                    "repeated_sampling_remaining_budget": remaining_budget,
+                    "repeated_sampling_over_allocated_token_cap": any(
+                        e["over_allocated_token_cap"] for e in execution_trace
+                    ),
+                },
+                completion_token_budget_override=task_budget,
+            )
+            logging.info(
+                "repeated_sampling task=%s/%s task_id=%s arm=%s attempts=%s pass@%s=%.4f",
+                task_index,
+                len(tasks),
+                task.task_id,
+                arm.arm_id,
+                attempt_index,
+                pass_k,
+                float(record.pass_at_k or 0.0),
+            )
+            records.append(record)
+            batch_records.append(record)
+            if on_batch_complete is not None and (
+                len(batch_records) >= resolved_batch_size or task_index == len(tasks)
+            ):
+                on_batch_complete(list(batch_records), records)
+                batch_records.clear()
+
+        return records
+
     def run_bara(
         self,
         tasks: list[CodeGenTask],
@@ -299,7 +431,7 @@ class ExperimentRunner:
                 completion_token_budget_override=task_level_budget,
             )
             if not bara_trace:
-                feedback = _selector_feedback(record, metric=self.bara_config.selector_feedback_metric)
+                feedback = _selector_feedback(record, metric="reward")
                 selector_apply_update(
                     self.selector,
                     arm_id=selected_arm.arm_id,
@@ -431,18 +563,12 @@ class ExperimentRunner:
         execution_trace: list[dict[str, Any]] = []
         final_arm = arm_map[ranked_arms[0]]
         remaining_budget = int(task_budget)
+
         for arm_index, arm_id in enumerate(ranked_arms, 1):
             if remaining_budget <= 0:
                 break
             arm = arm_map[arm_id]
-            if getattr(self.bara_config, "free_run", False):
-                allocation = {
-                    "arm_id": arm_id,
-                    "remaining_budget_before_arm": int(remaining_budget),
-                    "allocated_completion_token_cap": int(remaining_budget),
-                    "allocation_mode": "free_remaining_budget",
-                }
-            elif getattr(self.bara_config, "static_budget", False):
+            if getattr(self.bara_config, "static_budget", False):
                 remaining_ranked_arms = list(ranked_arms[arm_index - 1 :])
                 prior_weights = dict(
                     getattr(self.bara_config, "budget_prior_weights", None)
@@ -525,10 +651,7 @@ class ExperimentRunner:
                 pass_k=pass_k,
                 allocated_completion_token_cap=allocated_cap,
                 token_usage_for_budget=charged_token_usage,
-                observe_budget_allocator=not (
-                    bool(getattr(self.bara_config, "static_budget", False))
-                    or bool(getattr(self.bara_config, "free_run", False))
-                ),
+                observe_budget_allocator=True,
             )
             execution_trace.append(
                 {
@@ -676,7 +799,7 @@ class ExperimentRunner:
             },
             completion_token_budget_override=allocated_completion_token_cap,
         )
-        feedback = _selector_feedback(attempt_record, metric=self.bara_config.selector_feedback_metric)
+        feedback = _selector_feedback(attempt_record, metric="reward")
         selector_apply_update(
             self.selector,
             arm_id=arm.arm_id,

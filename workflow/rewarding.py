@@ -161,16 +161,8 @@ def compute_reward_components(
 
     if reward_version == "v2":
         log_cost_cap = getattr(reward_config, "v2_log_cost_cap", reward_config.max_normalized_completion_cost)
-        pass_log_cost_weight = getattr(
-            reward_config,
-            "v2_pass_log_cost_weight",
-            reward_config.pass_cost_weight,
-        )
-        fail_log_cost_weight = getattr(
-            reward_config,
-            "v2_fail_log_cost_weight",
-            reward_config.fail_cost_weight,
-        )
+        pass_log_cost_weight = getattr(reward_config, "v2_pass_log_cost_weight", 0.0)
+        fail_log_cost_weight = getattr(reward_config, "v2_fail_log_cost_weight", 0.0)
         fail_base_reward = getattr(reward_config, "v2_fail_base_reward", 0.0)
         log_cost = min(math.log1p(effective_cost_tokens), log_cost_cap)
         if pass_at_k > 0.0:
@@ -243,11 +235,11 @@ def compute_reward_components(
     if pass_at_k > 0.0:
         pass_reward = reward_config.success_reward * pass_at_k
         fail_penalty = 0.0
-        total_reward = pass_reward - (reward_config.pass_cost_weight * normalized_completion_cost)
+        total_reward = pass_reward
     else:
         pass_reward = 0.0
-        fail_penalty = reward_config.fail_cost_weight * normalized_completion_cost
-        total_reward = -fail_penalty
+        fail_penalty = 0.0
+        total_reward = 0.0
     return {
         "reward_version": reward_version,
         "total_reward": total_reward,
@@ -263,8 +255,6 @@ def compute_reward_components(
         "normalized_reference_cost": normalized_reference_cost,
         "normalized_completion_cost": normalized_completion_cost,
         "success_reward": reward_config.success_reward,
-        "pass_cost_weight": reward_config.pass_cost_weight,
-        "fail_cost_weight": reward_config.fail_cost_weight,
     }
 
 
@@ -311,8 +301,8 @@ def compute_repair_decision_reward(
         reward_config.max_normalized_completion_cost,
     )
     if repaired_passed:
-        return reward_config.success_reward - (reward_config.pass_cost_weight * normalized_repair_cost)
-    return -(reward_config.fail_cost_weight * normalized_repair_cost)
+        return reward_config.success_reward
+    return 0.0
 
 
 def reward_formula_description(reward_config: RewardConfig | None = None) -> str:
@@ -369,8 +359,6 @@ def reward_weight_dict(reward_config: RewardConfig | None = None) -> dict[str, f
     return {
         **base,
         "success_reward": reward_config.success_reward,
-        "pass_cost_weight": reward_config.pass_cost_weight,
-        "fail_cost_weight": reward_config.fail_cost_weight,
     }
 
 

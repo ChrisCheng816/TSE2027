@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Paired bootstrap significance tests for the BigCodeBench result tables.
 
-The script uses one statistical procedure everywhere: paired bootstrap over
-aligned task ids. Table-specific code only decides which per-task BARA and
-baseline series correspond to the table cell.
+The script uses paired bootstrap over aligned task ids. Mean-valued metrics
+resample their per-task series; capped rate resamples task-level attempt counts
+and recomputes capped attempts divided by total attempts in every sample.
 """
 
 from __future__ import annotations
@@ -21,9 +21,13 @@ import numpy as np
 DEFAULT_MODELS = ("qwen3-30b", "qwen2.5-32b", "claude-opus-4.8")
 DEFAULT_BUDGETS = (10000, 15000, 20000)
 DATASET = "bigcodebench-v0.1.4"
-ARMS = ("A0", "A1", "A2")
-ARM_LABEL = {"A0": "Direct Coding", "A1": "Plan-Structured Coding", "A2": "Test-Guided Repair"}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_REPEATED_SAMPLING_ROOT = PROJECT_ROOT / "results" / "repeated_sampling"
+REPEATED_WORKFLOW_LABEL = {
+    "direct_coding": "Repeated Sampling (Direct Coding)",
+    "plan_structured_coding": "Repeated Sampling (Plan-Structured)",
+    "test_guided_repair": "Repeated Sampling (Test-Guided)",
+}
 
 RQ2_TABLE = {
     "qwen3-30b": {
@@ -94,6 +98,8 @@ class RunArrays:
     solve: np.ndarray
     firsthit: np.ndarray
     capped: np.ndarray
+    capped_count: np.ndarray
+    attempt_count: np.ndarray
     cost: np.ndarray
     capped_numer: int
     capped_denom: int
@@ -107,6 +113,8 @@ class SeriesChoice:
     series: np.ndarray
     table_pt: float
     actual_pt: float
+    ratio_numer: np.ndarray | None = None
+    ratio_denom: np.ndarray | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -117,6 +125,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--budget", type=int, nargs="+", default=list(DEFAULT_BUDGETS))
     parser.add_argument("--bootstrap-samples", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--repeated-sampling-root", type=Path, default=DEFAULT_REPEATED_SAMPLING_ROOT)
     parser.add_argument("--output-dir", type=Path, default=None)
     return parser.parse_args()
 
@@ -145,6 +154,8 @@ def load_run(path: Path, *, single_arm_budget: int | None = None) -> RunArrays:
     solve: list[float] = []
     firsthit: list[float] = []
     capped: list[float] = []
+    capped_count: list[float] = []
+    attempt_count: list[float] = []
     cost: list[float] = []
     capped_numer = 0
     capped_denom = 0
@@ -178,10 +189,14 @@ def load_run(path: Path, *, single_arm_budget: int | None = None) -> RunArrays:
             if trace:
                 caps = [1.0 if item.get("over_allocated_token_cap") else 0.0 for item in trace]
                 capped.append(float(np.mean(caps)))
+                capped_count.append(float(sum(caps)))
+                attempt_count.append(float(len(caps)))
                 capped_numer += int(sum(caps))
                 capped_denom += len(caps)
             else:
                 capped.append(float("nan"))
+                capped_count.append(0.0)
+                attempt_count.append(0.0)
 
             task_ids.append(task_id)
             solve.append(solved)
@@ -196,6 +211,8 @@ def load_run(path: Path, *, single_arm_budget: int | None = None) -> RunArrays:
         solve=np.asarray(solve, dtype=np.float64)[order],
         firsthit=np.asarray(firsthit, dtype=np.float64)[order],
         capped=np.asarray(capped, dtype=np.float64)[order],
+        capped_count=np.asarray(capped_count, dtype=np.float64)[order],
+        attempt_count=np.asarray(attempt_count, dtype=np.float64)[order],
         cost=np.asarray(cost, dtype=np.float64)[order],
         capped_numer=capped_numer,
         capped_denom=capped_denom,
@@ -217,6 +234,8 @@ def mean_run(name: str, runs: Iterable[RunArrays]) -> RunArrays:
         solve=np.column_stack([run.solve for run in runs]).mean(axis=1),
         firsthit=np.column_stack([run.firsthit for run in runs]).mean(axis=1),
         capped=np.column_stack([run.capped for run in runs]).mean(axis=1),
+        capped_count=np.column_stack([run.capped_count for run in runs]).sum(axis=1),
+        attempt_count=np.column_stack([run.attempt_count for run in runs]).sum(axis=1),
         cost=np.column_stack([run.cost for run in runs]).mean(axis=1),
         capped_numer=sum(run.capped_numer for run in runs),
         capped_denom=sum(run.capped_denom for run in runs),
@@ -354,6 +373,8 @@ def choice_from_run(run: RunArrays, metric: str, table_pt: float) -> SeriesChoic
         series=metric_series(run, metric),
         table_pt=table_pt,
         actual_pt=metric_value(run, metric),
+        ratio_numer=run.capped_count if metric == "capped" else None,
+        ratio_denom=run.attempt_count if metric == "capped" else None,
     )
 
 
@@ -366,7 +387,16 @@ def choice_from_runs(name: str, runs: Iterable[RunArrays], metric: str, table_pt
         if run.task_ids != task_ids:
             raise AssertionError(f"task ids do not align for {name}: {runs[0].name} vs {run.name}")
     series = np.column_stack([metric_series(run, metric) for run in runs])
-    actual_pt = float(np.nanmean(series)) if metric == "cost" else 100.0 * float(np.nanmean(series))
+    ratio_numer = None
+    ratio_denom = None
+    if metric == "cost":
+        actual_pt = float(np.nanmean(series))
+    elif metric == "capped":
+        ratio_numer = np.column_stack([run.capped_count for run in runs])
+        ratio_denom = np.column_stack([run.attempt_count for run in runs])
+        actual_pt = 100.0 * float(np.sum(ratio_numer) / np.sum(ratio_denom))
+    else:
+        actual_pt = 100.0 * float(np.nanmean(series))
     files = tuple(display_path(run.path) for run in runs if run.path is not None)
     return SeriesChoice(
         name=name,
@@ -375,7 +405,24 @@ def choice_from_runs(name: str, runs: Iterable[RunArrays], metric: str, table_pt
         series=series,
         table_pt=table_pt,
         actual_pt=actual_pt,
+        ratio_numer=ratio_numer,
+        ratio_denom=ratio_denom,
     )
+
+
+def repeated_sampling_choices(root: Path, model: str, budget: int, dataset: str) -> list[SeriesChoice]:
+    choices = []
+    for workflow, label in REPEATED_WORKFLOW_LABEL.items():
+        path = glob_one(
+            root / model / workflow,
+            f"{model}_{workflow}_{dataset}_budget-{budget}.jsonl",
+        )
+        run = load_run(path)
+        choice = choice_from_run(run, "solve", metric_value(run, "solve"))
+        choices.append(
+            SeriesChoice(label, choice.files, choice.task_ids, choice.series, choice.table_pt, choice.actual_pt)
+        )
+    return choices
 
 
 def ensure_same_task_ids(label: str, *choices: SeriesChoice) -> None:
@@ -439,9 +486,95 @@ def bootstrap_diff(bara: np.ndarray, baseline: np.ndarray, *, rng: np.random.Gen
     return point, float(low), float(high), p_value
 
 
+def bootstrap_ratio_diff(
+    bara_numer: np.ndarray,
+    bara_denom: np.ndarray,
+    baseline_numer: np.ndarray,
+    baseline_denom: np.ndarray,
+    *,
+    rng: np.random.Generator,
+    samples: int,
+    direction: str,
+) -> tuple[float, float, float, float]:
+    bara_numer = np.asarray(bara_numer, dtype=np.float64)
+    bara_denom = np.asarray(bara_denom, dtype=np.float64)
+    baseline_numer = np.asarray(baseline_numer, dtype=np.float64)
+    baseline_denom = np.asarray(baseline_denom, dtype=np.float64)
+    if bara_numer.shape != bara_denom.shape or baseline_numer.shape != baseline_denom.shape:
+        raise AssertionError("ratio numerator and denominator shapes must match")
+    if bara_numer.ndim not in (1, 2) or baseline_numer.ndim not in (1, 2):
+        raise AssertionError(f"expected 1D or 2D ratio arrays, got {bara_numer.shape} vs {baseline_numer.shape}")
+    if bara_numer.shape[0] != baseline_numer.shape[0]:
+        raise AssertionError(f"task dimension mismatch: {bara_numer.shape} vs {baseline_numer.shape}")
+    if bara_numer.ndim == 2 and baseline_numer.ndim == 2 and bara_numer.shape[1] != baseline_numer.shape[1]:
+        raise AssertionError(f"run dimension mismatch: {bara_numer.shape} vs {baseline_numer.shape}")
+
+    def point_ratio(numer: np.ndarray, denom: np.ndarray) -> float:
+        total = float(np.sum(denom))
+        if total <= 0.0:
+            raise AssertionError("attempt-level ratio has zero denominator")
+        return float(np.sum(numer) / total)
+
+    n = bara_numer.shape[0]
+    run_count = bara_numer.shape[1] if bara_numer.ndim == 2 else (baseline_numer.shape[1] if baseline_numer.ndim == 2 else 0)
+    diffs = np.empty(samples, dtype=np.float64)
+    chunk_size = 256
+    for start in range(0, samples, chunk_size):
+        stop = min(start + chunk_size, samples)
+        size = stop - start
+        task_idx = rng.integers(0, n, size=(size, n), dtype=np.int32)
+        run_idx = rng.integers(0, run_count, size=(size, run_count), dtype=np.int32) if run_count else None
+
+        def sampled_ratio(numer: np.ndarray, denom: np.ndarray) -> np.ndarray:
+            if numer.ndim == 2:
+                assert run_idx is not None
+                sampled_numer = numer[task_idx[:, :, None], run_idx[:, None, :]].sum(axis=(1, 2))
+                sampled_denom = denom[task_idx[:, :, None], run_idx[:, None, :]].sum(axis=(1, 2))
+            else:
+                sampled_numer = numer[task_idx].sum(axis=1)
+                sampled_denom = denom[task_idx].sum(axis=1)
+            if np.any(sampled_denom <= 0.0):
+                raise AssertionError("bootstrap sample has zero attempt denominator")
+            return sampled_numer / sampled_denom
+
+        bara_sample = sampled_ratio(bara_numer, bara_denom)
+        baseline_sample = sampled_ratio(baseline_numer, baseline_denom)
+        if direction == "higher":
+            diffs[start:stop] = bara_sample - baseline_sample
+        elif direction == "lower":
+            diffs[start:stop] = baseline_sample - bara_sample
+        else:
+            raise ValueError(direction)
+
+    bara_point = point_ratio(bara_numer, bara_denom)
+    baseline_point = point_ratio(baseline_numer, baseline_denom)
+    if direction == "higher":
+        point = bara_point - baseline_point
+    elif direction == "lower":
+        point = baseline_point - bara_point
+    else:
+        raise ValueError(direction)
+    low, high = np.percentile(diffs, [2.5, 97.5])
+    p_value = min(1.0, 2.0 * min(float(np.mean(diffs <= 0.0)), float(np.mean(diffs >= 0.0))))
+    return point, float(low), float(high), p_value
+
+
 def bootstrap_row(*, table: str, model: str, budget: int, metric: str, bara_label: str, bara: SeriesChoice, baseline_label: str, baseline: SeriesChoice, direction: str, rng: np.random.Generator, samples: int) -> dict[str, object]:
     ensure_same_task_ids(f"{table} {model} {budget} {metric}", bara, baseline)
-    diff, low, high, p_value = bootstrap_diff(bara.series, baseline.series, rng=rng, samples=samples, direction=direction)
+    if metric == "capped":
+        if bara.ratio_numer is None or bara.ratio_denom is None or baseline.ratio_numer is None or baseline.ratio_denom is None:
+            raise AssertionError("capped bootstrap requires attempt-level numerator and denominator arrays")
+        diff, low, high, p_value = bootstrap_ratio_diff(
+            bara.ratio_numer,
+            bara.ratio_denom,
+            baseline.ratio_numer,
+            baseline.ratio_denom,
+            rng=rng,
+            samples=samples,
+            direction=direction,
+        )
+    else:
+        diff, low, high, p_value = bootstrap_diff(bara.series, baseline.series, rng=rng, samples=samples, direction=direction)
     significant = bool(low > 0.0 and diff > 0.0)
     if significant:
         result = "win"
@@ -477,13 +610,6 @@ def bootstrap_row(*, table: str, model: str, budget: int, metric: str, bara_labe
     }
 
 
-def single_arm_choice(repo_root: Path, model: str, arm: str, budget: int, dataset: str) -> SeriesChoice:
-    path = repo_root / "results" / "main" / "pass_only" / model / f"{model}_{arm}.jsonl"
-    run = load_run(path, single_arm_budget=budget)
-    choice = choice_from_run(run, "solve", metric_value(run, "solve"))
-    return SeriesChoice(ARM_LABEL[arm], choice.files, choice.task_ids, choice.series, choice.table_pt, choice.actual_pt)
-
-
 def build_rq1_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[dict[str, object]]:
     rows = []
     for model in args.models:
@@ -495,7 +621,9 @@ def build_rq1_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[d
                 "solve",
                 RQ2_TABLE[model]["BARA"]["solve"][idx],
             )
-            baselines = [single_arm_choice(args.repo_root, model, arm, budget, args.dataset_name) for arm in ARMS]
+            baselines = repeated_sampling_choices(
+                args.repeated_sampling_root, model, budget, args.dataset_name
+            )
             baseline = max(baselines, key=lambda choice: choice.actual_pt)
             rows.append(bootstrap_row(table="rq1", model=model, budget=budget, metric="solve", bara_label="BARA", bara=bara, baseline_label=baseline.name, baseline=baseline, direction="higher", rng=rng, samples=args.bootstrap_samples))
     return rows
@@ -588,6 +716,7 @@ def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
 def write_summary(path: Path, rows: list[dict[str, object]]) -> None:
     lines = [
         "All tests use paired bootstrap over aligned tasks; multi-run BARA methods additionally resample task-order runs.",
+        "Capped-rate samples recompute capped attempts / total workflow attempts after task resampling.",
         "For direction=higher, diff=bara-baseline. For direction=lower, diff=baseline-bara.",
         "",
     ]

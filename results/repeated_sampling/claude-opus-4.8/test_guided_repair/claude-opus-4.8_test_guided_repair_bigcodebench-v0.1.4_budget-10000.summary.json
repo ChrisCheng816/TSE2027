@@ -1,0 +1,29 @@
+{
+  "num_tasks": 1140,
+  "reward_count": 0,
+  "mean_reward": null,
+  "prompt_token_count": 1140,
+  "mean_prompt_tokens": 2666.25,
+  "completion_token_count": 1140,
+  "mean_completion_tokens": 1682.7736842105264,
+  "total_token_count": 1140,
+  "mean_total_tokens": 8150.4850877192985,
+  "num_passed_tasks": 725,
+  "pass_rate": 0.6359649122807017,
+  "mean_arms_used_per_task": 1.0,
+  "arm_pull_counts": {
+    "Test-Guided Repair": 1140
+  },
+  "arm_mean_rewards": {
+    "Test-Guided Repair": 0.0
+  },
+  "arm_mean_prompt_tokens": {
+    "Test-Guided Repair": 2666.25
+  },
+  "arm_mean_completion_tokens": {
+    "Test-Guided Repair": 1682.7736842105264
+  },
+  "arm_mean_total_tokens": {
+    "Test-Guided Repair": 8150.4850877192985
+  }
+}

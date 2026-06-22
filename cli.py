@@ -7,14 +7,11 @@ import random
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
-
 from .arms import get_arm_choices, get_partition_arms, normalize_arm_ids
 from .bara import (
     KNNArmBudgetAllocator,
     build_partition_selector,
     normalize_selector_algorithm,
-    selector_apply_preload,
 )
 from .config import (
     DEFAULT_ABLATION_RESULTS_DIR,
@@ -36,8 +33,6 @@ from .models import (
 )
 from .runner import (
     ExperimentRunner,
-    _compute_reward_components,
-    _compute_repair_decision_reward,
     build_experiment_summary,
 )
 
@@ -87,8 +82,6 @@ def _run_config(config: ExperimentConfig, *, args: argparse.Namespace) -> None:
 
     if config.run_mode == "bara":
         _run_bara(config, static_completion=args.static_completion)
-    elif config.run_mode == "full_pipeline":
-        _run_full_pipeline(config, static_completion=args.static_completion)
     elif config.run_mode == "repeated_sampling":
         _run_repeated_sampling(config, static_completion=args.static_completion)
     else:
@@ -105,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--run-mode",
-        choices=("all_arms", "bara", "full_pipeline", "repeated_sampling"),
+        choices=("all_arms", "bara", "repeated_sampling"),
         default=None,
         help="Optional run-mode override. Defaults to the mode configured inside config.py.",
     )
@@ -172,17 +165,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use a static workflow schedule instead of BARA ranking.",
     )
     parser.add_argument(
-        "--static-budget",
-        dest="static_budget",
-        action="store_true",
-        help="Use static prior weights for budget allocation.",
-    )
-    parser.add_argument(
-        "--free",
-        action="store_true",
-        help="Give each attempted workflow the full remaining task budget."
-    )
-    parser.add_argument(
         "--seeds",
         type=int,
         nargs="+",
@@ -215,12 +197,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--budget-quantile", type=float, default=None)
     parser.add_argument("--budget-min-neighbors", type=int, default=None)
-    parser.add_argument(
-        "--warm-start-dataset-name",
-        default=None,
-        choices=get_dataset_choices(),
-        help="Optional warm-start dataset override used when preloading selector state.",
-    )
     parser.add_argument(
         "--token-aware",
         dest="token_aware",
@@ -283,7 +259,6 @@ def _resolve_config(
     config = DEFAULT_EXPERIMENT_CONFIG
     resolved_run_mode = args.run_mode if args.run_mode is not None else config.run_mode
     model_config = config.model
-    warm_start_config = config.warm_start
     bandit_config = config.bandit
     selector_config = bandit_config.selector
     bara_config = config.bara
@@ -297,8 +272,6 @@ def _resolve_config(
         model_config = replace(model_config, model_name=resolved_model_name)
     if getattr(args, "cuda_visible_devices", None) is not None:
         vllm_config = replace(vllm_config, cuda_visible_devices=args.cuda_visible_devices)
-    if getattr(args, "warm_start_dataset_name", None) is not None:
-        warm_start_config = replace(warm_start_config, dataset_name=args.warm_start_dataset_name)
     if getattr(args, "knn", False):
         selector_config = replace(selector_config, algorithm="knn")
     bandit_config = replace(bandit_config, selector=selector_config)
@@ -307,14 +280,6 @@ def _resolve_config(
         raise ValueError("--uniform and --static require --run-mode bara.")
     if getattr(args, "uniform_run", False) and getattr(args, "static_run", False):
         raise ValueError("--uniform cannot be combined with --static.")
-    if getattr(args, "static_budget", False) and resolved_run_mode != "bara":
-        raise ValueError("--static-budget requires --run-mode bara.")
-    if getattr(args, "free", False) and (
-        getattr(args, "uniform_run", False)
-        or getattr(args, "static_run", False)
-        or getattr(args, "static_budget", False)
-    ):
-        raise ValueError("--free cannot be combined with --uniform, --static, or --static-budget.")
     if getattr(args, "static_order", None) is not None and not getattr(args, "static_run", False):
         raise ValueError("--static-order only applies to --static.")
 
@@ -326,21 +291,12 @@ def _resolve_config(
         bara_updates["uniform_run"] = True
     if getattr(args, "static_run", False):
         bara_updates["static_run"] = True
-    if getattr(args, "static_budget", False):
-        bara_updates["static_budget"] = True
-    if getattr(args, "free", False):
-        bara_updates["free_run"] = True
     if getattr(args, "static_order", None) is not None:
         bara_updates["static_order"] = str(args.static_order)
     if getattr(args, "budget", None) is not None:
         if args.budget < 0:
             raise ValueError("--budget must be non-negative.")
-        bara_updates.update(
-            {
-                "bigcodebench_per_task_completion_token_budget": int(args.budget),
-                "per_task_completion_token_budget": int(args.budget),
-            }
-        )
+        bara_updates["bigcodebench_per_task_completion_token_budget"] = int(args.budget)
     if getattr(args, "budget_allocator", None) is not None:
         bara_updates["budget_allocator"] = _normalize_budget_allocator_arg(args.budget_allocator)
     if getattr(args, "budget_quantile", None) is not None:
@@ -369,8 +325,6 @@ def _resolve_config(
             bara_config,
             uniform_run=False,
             static_run=False,
-            static_budget=False,
-            free_run=False,
         )
 
     generation_config = config.generation
@@ -390,7 +344,6 @@ def _resolve_config(
         limit=args.limit if args.limit is not None else config.limit,
         task_order_seed=task_order_seed,
         model=model_config,
-        warm_start=warm_start_config,
         bandit=bandit_config,
         bara=bara_config,
         vllm=vllm_config,
@@ -403,6 +356,7 @@ def _run_repeated_sampling(config: ExperimentConfig, *, static_completion: str |
         raise ValueError("--run-mode repeated_sampling requires --arm-id.")
     tasks = _load_tasks(config)
     arms = get_partition_arms((config.repeated_sampling_arm_id,))
+    arm = arms[0]
     budget_label = format_budget_group_label(
         bara_per_task_completion_token_budget(config.bara, config.dataset_name)
     )
@@ -415,11 +369,13 @@ def _run_repeated_sampling(config: ExperimentConfig, *, static_completion: str |
         budget_label,
         config.generation.temperature,
     )
-    records = _run_bara_mainline(
-        config=config,
-        tasks=tasks,
-        arms=arms,
-        static_completion=static_completion,
+    runner = _build_runner(config, arms=arms, static_completion=static_completion, enable_feature_extractor=False)
+    records = runner.run_repeated_sampling(
+        tasks,
+        arm=arm,
+        num_samples_per_task=config.num_samples_per_task,
+        pass_k=config.pass_k,
+        evaluation_timeout_sec=config.evaluation_timeout_sec,
     )
     output_path = config.paths.repeated_sampling_output_path(
         config.model.model_name,
@@ -442,33 +398,24 @@ def _run_all_arms(
     config: ExperimentConfig,
     *,
     static_completion: str | None,
-    run_bara_after_all_arms: bool = False,
+    run_bara_after_all_arms: bool = False,  # kept for --then-bara compatibility
 ) -> None:
     tasks = _load_tasks(config)
     arms = get_partition_arms(list(config.arm_ids))
-    metrics_mode = (
-        "reward+feature-enabled"
-        if config.all_arms_compute_reward_and_features
-        else "pass-only"
-    )
     logging.info(
-        "[all_arms] dataset=%s loaded %s tasks task_kinds=%s metrics_mode=%s",
+        "[all_arms] dataset=%s loaded %s tasks task_kinds=%s",
         config.dataset_name,
         len(tasks),
         _summarize_task_kinds(tasks),
-        metrics_mode,
     )
     runner = _build_runner(
         config,
         arms=arms,
         static_completion=static_completion,
-        apply_warm_start=False,
-        enable_feature_extractor=config.all_arms_compute_reward_and_features,
+        enable_feature_extractor=False,
     )
-    records_by_arm: dict[str, list[object]] = {}
 
     def _persist_arm_records(arm, records) -> None:
-        records_by_arm[arm.arm_id] = list(records)
         output_path = config.paths.arm_output_path(
             config.model.model_name,
             arm.arm_id,
@@ -482,20 +429,6 @@ def _run_all_arms(
         _write_records(output_path=output_path, records=records)
         _write_summary(summary_path=summary_path, summary=build_experiment_summary(records, arms=(arm,)))
         logging.info("[all_arms] wrote arm=%s records=%s -> %s", arm.arm_id, len(records), output_path)
-
-        if config.all_arms_compute_reward_and_features:
-            reward_rows = _build_reward_rows(
-                records_by_arm=records_by_arm,
-                ordered_arms=arms,
-                runner=runner,
-                config=config,
-            )
-            reward_output_path = config.paths.reward_output_path(
-                config.model.model_name,
-                config.dataset_name,
-            )
-            write_jsonl(reward_output_path, reward_rows)
-            logging.info("[all_arms] updated reward table -> %s", reward_output_path)
 
     runner.run_all_arms(
         tasks,
@@ -539,57 +472,6 @@ def _run_bara(config: ExperimentConfig, *, static_completion: str | None) -> Non
     _write_bara_outputs(config=config, arms=arms, records=records)
 
 
-def _run_full_pipeline(config: ExperimentConfig, *, static_completion: str | None) -> None:
-    warm_start_all_arms_config = replace(
-        config,
-        run_mode="all_arms",
-        dataset_name=config.warm_start.dataset_name,
-        all_arms_compute_reward_and_features=True,
-    )
-    eval_all_arms_config = replace(
-        config,
-        run_mode="all_arms",
-        dataset_name=config.dataset_name,
-        all_arms_compute_reward_and_features=True,
-    )
-    bara_config = replace(
-        config,
-        run_mode="bara",
-        dataset_name=config.dataset_name,
-        bara=replace(config.bara, rank_and_allocate=True),
-    )
-    logging.info(
-        "[full_pipeline] warm_start_dataset=%s eval_dataset=%s bara_dataset=%s",
-        warm_start_all_arms_config.dataset_name,
-        eval_all_arms_config.dataset_name,
-        bara_config.dataset_name,
-    )
-
-    warm_start_reward_path = config.paths.reward_output_path(
-        config.model.model_name,
-        warm_start_all_arms_config.dataset_name,
-    )
-    if warm_start_reward_path.exists():
-        logging.info(
-            "[full_pipeline] reusing existing warm-start reward table -> %s",
-            warm_start_reward_path,
-        )
-    else:
-        _run_all_arms(
-            warm_start_all_arms_config,
-            static_completion=static_completion,
-            run_bara_after_all_arms=False,
-        )
-    _run_all_arms(
-        eval_all_arms_config,
-        static_completion=static_completion,
-        run_bara_after_all_arms=False,
-    )
-    _run_bara(
-        bara_config,
-        static_completion=static_completion,
-    )
-
 
 def _run_bara_mainline(*, config: ExperimentConfig, tasks, arms, static_completion: str | None):
     runner = _build_runner(config, arms=arms, static_completion=static_completion)
@@ -606,7 +488,6 @@ def _build_runner(
     *,
     arms,
     static_completion: str | None,
-    apply_warm_start: bool = True,
     enable_feature_extractor: bool = True,
 ) -> ExperimentRunner:
     feature_extractor = build_feature_extractor(config) if enable_feature_extractor else None
@@ -634,17 +515,6 @@ def _build_runner(
             normalize_selector_algorithm(config.bandit.selector.algorithm),
             ",".join(arm.arm_id for arm in arms),
             len(feature_extractor.FEATURE_NAMES),
-        )
-    if apply_warm_start:
-        if selector is None or feature_extractor is None:
-            raise RuntimeError("Warm start requires a feature extractor and selector.")
-        _apply_warm_start(
-            selector,
-            config,
-            feature_extractor=feature_extractor,
-            expected_feature_names=list(feature_extractor.FEATURE_NAMES),
-            budget_allocator=budget_allocator,
-            arms=tuple(arms),
         )
 
     if static_completion is not None:
@@ -747,10 +617,6 @@ def _bara_output_path(*, config: ExperimentConfig, budget_label: str | None) -> 
 
 def _bara_variant(config: ExperimentConfig) -> str:
     bara = config.bara
-    if getattr(bara, "free_run", False):
-        return "free"
-    if getattr(bara, "static_budget", False):
-        return "budget"
     if getattr(bara, "static_run", False):
         static_order = str(getattr(bara, "static_order", "A0-A1-A2") or "A0-A1-A2")
         return f"static_order{static_order}"
@@ -762,269 +628,9 @@ def _bara_variant(config: ExperimentConfig) -> str:
 def _bara_allocator_prefix(config: ExperimentConfig) -> str:
     allocator = str(getattr(config.bara, "budget_allocator", "") or "").strip().lower()
     default_allocator = str(DEFAULT_EXPERIMENT_CONFIG.bara.budget_allocator).strip().lower()
-    if not allocator or allocator == default_allocator or getattr(config.bara, "static_budget", False):
+    if not allocator or allocator == default_allocator:
         return ""
     return f"allocator-{allocator}_"
-
-
-def _apply_warm_start(
-    selector: Any,
-    config: ExperimentConfig,
-    *,
-    feature_extractor,
-    expected_feature_names: list[str] | None = None,
-    budget_allocator: Any | None = None,
-    arms: tuple[Any, ...] = (),
-) -> int:
-    warm_start = getattr(config, "warm_start", None)
-    if warm_start is None or not warm_start.enabled:
-        return 0
-    if config.run_mode == "all_arms" and config.dataset_name == warm_start.dataset_name:
-        logging.info(
-            "[warm_start] skipping preload because run_mode=all_arms is generating the configured warm-start dataset (%s)",
-            warm_start.dataset_name,
-        )
-        return 0
-
-    reward_path = config.paths.reward_output_path(
-        config.model.model_name,
-        warm_start.dataset_name,
-    )
-    if not reward_path.exists():
-        message = f"Warm-start reward table not found: {reward_path}"
-        if warm_start.strict:
-            raise FileNotFoundError(message)
-        logging.info("[warm_start] %s; continuing with cold start", message)
-        return 0
-
-    task_by_id: dict[str, Any] | None = None
-
-    applied_rows = 0
-    arm_map = {arm.arm_id: arm for arm in arms}
-    with reward_path.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            if warm_start.max_rows is not None and applied_rows >= warm_start.max_rows:
-                break
-            raw_line = raw_line.strip()
-            if not raw_line:
-                continue
-            row = json.loads(raw_line)
-            if row.get("decision_selector_stage") == "repair":
-                logging.info(
-                    "[warm_start] skipping repair decision row because adaptive selection now uses upfront task features task_id=%s",
-                    row.get("task_id"),
-                )
-                continue
-            arm_id = str(row.get("arm_id") or "").strip()
-            if arm_id not in selector.arm_ids:
-                continue
-            if task_by_id is None:
-                warm_start_tasks = load_codegen_tasks(warm_start.dataset_name, limit=None)
-                task_by_id = {task.task_id: task for task in warm_start_tasks}
-            task_id = str(row.get("task_id") or "").strip()
-            warm_task = task_by_id.get(task_id)
-            if warm_task is None:
-                message = f"Warm-start task not found in dataset load: {task_id}"
-                if warm_start.strict:
-                    raise KeyError(message)
-                logging.info("[warm_start] %s; skipping arm=%s", message, arm_id)
-                continue
-            feature_result = feature_extractor.extract(warm_task)
-            context = [float(value) for value in feature_result.values]
-            if len(context) != selector.feature_dim:
-                message = (
-                    "Warm-start row has incompatible context dimension "
-                    f"(expected={selector.feature_dim}, got={len(context)})"
-                )
-                if warm_start.strict:
-                    raise ValueError(message)
-                logging.info("[warm_start] %s; skipping arm=%s task_id=%s", message, arm_id, task_id)
-                continue
-            if expected_feature_names is not None:
-                normalized_names = [str(value) for value in feature_result.names]
-                if normalized_names != expected_feature_names:
-                    message = (
-                        "Warm-start recomputed feature names are incompatible "
-                        f"(expected={expected_feature_names}, got={normalized_names})"
-                    )
-                    if warm_start.strict:
-                        raise ValueError(message)
-                    logging.info("[warm_start] %s; skipping arm=%s task_id=%s", message, arm_id, task_id)
-                    continue
-            selector_apply_preload(
-                selector,
-                arm_id=arm_id,
-                context=context,
-                reward=_warm_start_reward_from_row(row, config=config),
-                solved=float(row.get("pass_at_k") or 0.0) > 0.0,
-                metadata={
-                    "task_id": task_id,
-                    "reward_row": row,
-                },
-            )
-            if budget_allocator is not None:
-                arm = arm_map.get(arm_id)
-                default_token_cap = arm.total_token_budget() if arm is not None else None
-                budget_allocator.preload_observation(
-                    arm_id,
-                    context,
-                    token_usage=float(
-                        row.get("knn_total_tokens")
-                        or row.get("total_tokens")
-                        or row.get("completion_tokens")
-                        or 0.0
-                    ),
-                    token_cap=default_token_cap,
-                    metadata={
-                        "task_id": task_id,
-                        "reward_row": row,
-                    },
-                )
-            applied_rows += 1
-    logging.info("[warm_start] applied %s rows from %s", applied_rows, reward_path)
-    return applied_rows
-
-
-def _build_reward_rows(
-    *,
-    records_by_arm: dict[str, list[object]],
-    ordered_arms,
-    runner: ExperimentRunner,
-    config: ExperimentConfig,
-) -> list[dict[str, object]]:
-    arm_map = {arm.arm_id: arm for arm in ordered_arms}
-    a0_records_by_task = {
-        record.task_id: record
-        for record in records_by_arm.get("A0", [])
-    }
-    reward_rows: list[dict[str, object]] = []
-    for arm in ordered_arms:
-        for record in records_by_arm.get(arm.arm_id, []):
-            row = _record_to_reward_row(record)
-            if arm.arm_id == "A2":
-                decision_row = _repair_decision_row_from_records(
-                    a0_record=a0_records_by_task.get(record.task_id),
-                    a2_record=record,
-                    runner=runner,
-                    config=config,
-                    repair_arm=arm_map["A2"],
-                )
-                if decision_row is not None:
-                    row.update(decision_row)
-            reward_rows.append(row)
-    return reward_rows
-
-
-def _record_to_reward_row(record) -> dict[str, object]:
-    token_accounting = dict(((getattr(record, "metadata", None) or {}).get("token_accounting") or {}))
-    return {
-        "task_id": getattr(record, "task_id", ""),
-        "arm_id": getattr(record, "arm_id", ""),
-        "reward": getattr(record, "reward", None),
-        "pass_at_k": getattr(record, "pass_at_k", None),
-        "num_samples": getattr(record, "num_samples", 0),
-        "num_correct": getattr(record, "num_correct", 0),
-        "reference_completion_tokens": getattr(record, "reference_completion_tokens", 0),
-        "prompt_tokens": getattr(record, "prompt_tokens", 0),
-        "knn_prompt_tokens": token_accounting.get("knn_prompt_tokens_excluding_system", 0),
-        "completion_tokens": getattr(record, "completion_tokens", 0),
-        "accounted_completion_tokens": getattr(record, "accounted_completion_tokens", 0),
-        "total_tokens": getattr(record, "total_tokens", 0),
-        "knn_total_tokens": token_accounting.get("knn_total_tokens", 0),
-        "generation_duration_sec": getattr(record, "generation_duration_sec", 0.0),
-        "generation_durations_by_phase_sec": dict(getattr(record, "generation_durations_by_phase_sec", {}) or {}),
-        "generation_inference_durations_sec": list(getattr(record, "generation_inference_durations_sec", []) or []),
-        "completion_token_budget": getattr(record, "completion_token_budget", None),
-        "output_length": getattr(record, "output_length", 0),
-        "context_feature_names": list(getattr(record, "feature_names", []) or []),
-        "context_vector": list(getattr(record, "feature_vector", []) or []),
-        "metadata": dict(getattr(record, "metadata", {}) or {}),
-        "reward_components": getattr(record, "reward_components", {}) or {},
-        "model_name": getattr(record, "model_name", ""),
-        "model_path": getattr(record, "model_path", ""),
-        "dataset_name": getattr(record, "dataset_name", ""),
-    }
-
-
-def _repair_decision_row_from_records(
-    *,
-    a0_record,
-    a2_record,
-    runner: ExperimentRunner,
-    config: ExperimentConfig,
-    repair_arm,
-) -> dict[str, object] | None:
-    if a0_record is None or (a0_record.pass_at_k or 0.0) > 0.0:
-        return None
-    if not getattr(a0_record, "predictions", None):
-        return None
-
-    repair_prediction = next(
-        (prediction for prediction in getattr(a2_record, "predictions", []) if prediction.get("phase") == "repair_code"),
-        None,
-    )
-    if repair_prediction is None:
-        return None
-
-    draft_prediction = a0_record.predictions[0]
-    decision_features = runner.feature_extractor.extract_repair_context(
-        a0_record.task,
-        draft_output=str(draft_prediction.get("cleaned_output") or draft_prediction.get("raw_output") or ""),
-        evaluation=_prediction_to_evaluation(draft_prediction),
-        completion_tokens=int(draft_prediction.get("completion_tokens") or 0),
-    )
-    decision_reward = _compute_repair_decision_reward(
-        repaired_passed=bool(repair_prediction.get("passed")),
-        repair_completion_tokens=int(repair_prediction.get("completion_tokens") or 0),
-        repair_completion_token_budget=repair_arm.max_new_tokens_for_phase("repair_code"),
-        reward_config=config.reward,
-        repair_prompt_tokens=int(repair_prediction.get("prompt_tokens") or 0),
-        repair_cost_tokens=(
-            int(repair_prediction["total_tokens"])
-            if repair_prediction.get("total_tokens") is not None
-            else None
-        ),
-    )
-    return {
-        "decision_selector_stage": "repair",
-        "decision_context_feature_names": list(decision_features.names),
-        "decision_context_vector": list(decision_features.values),
-        "decision_reward": float(decision_reward),
-    }
-
-
-def _prediction_to_evaluation(prediction: dict[str, object]) -> dict[str, object]:
-    return {
-        "passed": prediction.get("passed"),
-        "exit_code": prediction.get("exit_code"),
-        "stdout": prediction.get("stdout"),
-        "stderr": prediction.get("stderr"),
-    }
-
-
-def _warm_start_reward_from_row(row: dict[str, object], *, config: ExperimentConfig) -> float:
-    pass_at_k = float(row.get("pass_at_k") or 0.0)
-    reward = row.get("reward")
-    reference_completion_tokens = int(row.get("reference_completion_tokens") or 0)
-    completion_tokens = int(row.get("completion_tokens") or 0)
-    completion_token_budget = int(row.get("completion_token_budget") or 0)
-    prompt_tokens = int(row.get("prompt_tokens") or 0)
-    cost_tokens = int(row["total_tokens"]) if row.get("total_tokens") is not None else None
-    if reference_completion_tokens > 0 and completion_token_budget > 0:
-        return float(
-            _compute_reward_components(
-                pass_at_k=pass_at_k,
-                reference_completion_tokens=reference_completion_tokens,
-                completion_tokens=completion_tokens,
-                completion_token_budget=completion_token_budget,
-                reward_config=config.reward,
-                prompt_tokens=prompt_tokens,
-                cost_tokens=cost_tokens,
-            )["total_reward"]
-        )
-    if reward is not None:
-        return float(reward)
-    return pass_at_k
 
 
 if __name__ == "__main__":

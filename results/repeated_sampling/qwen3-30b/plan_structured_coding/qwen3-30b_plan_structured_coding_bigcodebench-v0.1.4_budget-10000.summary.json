@@ -1,0 +1,29 @@
+{
+  "num_tasks": 1140,
+  "reward_count": 0,
+  "mean_reward": null,
+  "prompt_token_count": 1140,
+  "mean_prompt_tokens": 1461.7421052631578,
+  "completion_token_count": 1140,
+  "mean_completion_tokens": 1213.5219298245613,
+  "total_token_count": 1140,
+  "mean_total_tokens": 5824.184210526316,
+  "num_passed_tasks": 615,
+  "pass_rate": 0.5394736842105263,
+  "mean_arms_used_per_task": 1.0,
+  "arm_pull_counts": {
+    "Plan-Structured Coding": 1140
+  },
+  "arm_mean_rewards": {
+    "Plan-Structured Coding": 0.0
+  },
+  "arm_mean_prompt_tokens": {
+    "Plan-Structured Coding": 1461.7421052631578
+  },
+  "arm_mean_completion_tokens": {
+    "Plan-Structured Coding": 1213.5219298245613
+  },
+  "arm_mean_total_tokens": {
+    "Plan-Structured Coding": 5824.184210526316
+  }
+}

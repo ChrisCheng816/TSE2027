@@ -10,7 +10,7 @@ DEFAULT_EXPERIMENT_RESULTS_DIR = DEFAULT_RESULTS_ROOT / "main"
 DEFAULT_ABLATION_RESULTS_DIR = DEFAULT_RESULTS_ROOT / "ablation"
 DEFAULT_SENSITIVITY_RESULTS_DIR = DEFAULT_RESULTS_ROOT / "sensitivity"
 DEFAULT_SEED_RESULTS_DIR = DEFAULT_RESULTS_ROOT / "seeds"
-DEFAULT_REPEATED_SAMPLING_RESULTS_DIR = PROJECT_ROOT / "repeated_sampling"
+DEFAULT_REPEATED_SAMPLING_RESULTS_DIR = DEFAULT_RESULTS_ROOT / "repeated_sampling"
 DATASET_NAME = "bigcodebench-v0.1.4"
 MODEL_SPECS = [
     {"name": "qwen2.5-32b", "path": "Qwen/Qwen2.5-Coder-32B-Instruct"},
@@ -67,9 +67,6 @@ class PathConfig:
         return self.dataset_results_dir(dataset_name, token_optimized=token_optimized) / model_name
 
 
-    def legacy_model_results_dir(self, model_name: str) -> Path:
-        return self.experiment_results_dir / model_name
-
     def arm_output_path(self, model_name: str, arm_id: str, dataset_name: str) -> Path:
         return self.model_results_dir(model_name, dataset_name) / f"{model_name}_{arm_id}.jsonl"
 
@@ -114,36 +111,6 @@ class PathConfig:
     def reward_output_path(self, model_name: str, dataset_name: str) -> Path:
         return self.model_results_dir(model_name, dataset_name) / f"{model_name}.reward_table.jsonl"
 
-    def bara_output_path(
-        self,
-        model_name: str,
-        dataset_name: str,
-        arm_ids: tuple[str, ...] | list[str],
-        *,
-        budget_label: str | None = None,
-    ) -> Path:
-        bara_arm_ids = format_bara_arm_ids(arm_ids)
-        budget_suffix = f"_{budget_label}" if budget_label else ""
-        return (
-            self.model_results_dir(model_name, dataset_name)
-            / f"{model_name}_bara_{bara_arm_ids}{budget_suffix}.jsonl"
-        )
-
-    def bara_summary_path(
-        self,
-        model_name: str,
-        dataset_name: str,
-        arm_ids: tuple[str, ...] | list[str],
-        *,
-        budget_label: str | None = None,
-    ) -> Path:
-        bara_arm_ids = format_bara_arm_ids(arm_ids)
-        budget_suffix = f"_{budget_label}" if budget_label else ""
-        return (
-            self.model_results_dir(model_name, dataset_name)
-            / f"{model_name}_bara_{bara_arm_ids}{budget_suffix}.summary.json"
-        )
-
 
 @dataclass(frozen=True)
 class BanditStageConfig:
@@ -173,16 +140,10 @@ class BanditConfig:
 
 class BARAConfig:
     # ===== Mainline BARA controls =====
-    selector_feedback_metric: str = "reward"
-    # Dataset-specific budgets are used first for BigCodeBench.
-    total_completion_token_budget: int | None = None
     bigcodebench_per_task_completion_token_budget: int | None = 15000
-    per_task_completion_token_budget: int | None = None
     rank_and_allocate: bool = False
     uniform_run: bool = False
     static_run: bool = False
-    static_budget: bool = False
-    free_run: bool = False
     task_order_seed: int | None = None
     static_order: str = "A0-A1-A2"
 
@@ -203,8 +164,6 @@ class BARAConfig:
     )
 
     # ===== Alternative / legacy adaptive knobs =====
-    # selector_feedback_metric="pass_at_k" is available for ablations.
-    # budget_epsilon is the MLE tail risk.
     budget_epsilon: float = 0.01
 
 
@@ -212,16 +171,13 @@ def bara_per_task_completion_token_budget(
     bara_config: BARAConfig,
     dataset_name: str,
 ) -> int | None:
-    dataset_bucket = results_dataset_bucket(dataset_name)
-    if dataset_bucket in {"pass_only", "token_aware"}:
-        return bara_config.bigcodebench_per_task_completion_token_budget
-    return bara_config.per_task_completion_token_budget
+    return bara_config.bigcodebench_per_task_completion_token_budget
 
 
 @dataclass(frozen=True)
 class RewardConfig:
     # ===== Mainline pass-only reward (PO) =====
-    reward_version: str = "v2"
+    reward_version: str = "binary"
     success_reward: float = 1
 
     # ===== Shared mainline token accounting =====
@@ -231,13 +187,6 @@ class RewardConfig:
     prompt_token_cost_weight: float = 1.0
     completion_token_cost_weight: float = 4
 
-    # ===== Alternative / legacy reward knobs =====
-    pass_cost_weight: float = 0.08
-    fail_cost_weight: float = 0.02
-    v2_pass_log_cost_weight: float = 0
-    v2_fail_log_cost_weight: float = 0
-    v2_fail_base_reward: float = 0
-    v2_log_cost_cap: float = 6.8146
 
 
 @dataclass(frozen=True)
@@ -251,22 +200,7 @@ class TokenOptimizedRewardConfig(RewardConfig):
     prompt_token_cost_weight: float = 1.0
     completion_token_cost_weight: float = 4
 
-    # ===== Alternative / legacy reward knobs =====
-    # Repeated here so this profile remains self-contained if copied or edited.
-    pass_cost_weight: float = 0.08
-    fail_cost_weight: float = 0.02
-    v2_pass_log_cost_weight: float = 0
-    v2_fail_log_cost_weight: float = 0
-    v2_fail_base_reward: float = 0
-    v2_log_cost_cap: float = 9.21044
 
-
-@dataclass(frozen=True)
-class WarmStartConfig:
-    enabled: bool = False
-    dataset_name: str = "bigcodebench-v0.1.4"
-    max_rows: int | None = None
-    strict: bool = False
 
 
 @dataclass(frozen=True)
@@ -304,7 +238,6 @@ class ExperimentConfig:
     token_aware: bool = False
     dataset_name: str = DATASET_NAME
     arm_ids: tuple[str, ...] = DEFAULT_ARM_SET
-    all_arms_compute_reward_and_features: bool = False
     repeated_sampling_arm_id: str | None = None
     limit: int | None = None
     task_order_seed: int | None = None
@@ -319,7 +252,6 @@ class ExperimentConfig:
     bara: BARAConfig = field(default_factory=BARAConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     token_reward: RewardConfig = field(default_factory=TokenOptimizedRewardConfig)
-    warm_start: WarmStartConfig = field(default_factory=WarmStartConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     model: ModelRuntimeConfig = field(default_factory=ModelRuntimeConfig)
     vllm: VLLMConfig = field(default_factory=VLLMConfig)

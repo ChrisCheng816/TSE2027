@@ -91,7 +91,7 @@ Results use repository-relative paths. Each experiment bucket contains one subdi
 
 Each JSONL output has a matching `.summary.json` file.
 
-## Arm Prompts
+## Workflow Prompts
 
 ### Direct Coding
 

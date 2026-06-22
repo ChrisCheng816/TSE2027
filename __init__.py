@@ -22,7 +22,6 @@ from .config import (
     RewardConfig,
     TokenOptimizedRewardConfig,
     VLLMConfig,
-    WarmStartConfig,
     get_model_choices,
     resolve_model_path,
 )
@@ -73,7 +72,6 @@ __all__ = [
     "StaticModelClient",
     "VLLMConfig",
     "VLLMModelClient",
-    "WarmStartConfig",
     "build_executable_code",
     "build_experiment_summary",
     "build_prompt_bundle",
