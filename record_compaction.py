@@ -120,10 +120,10 @@ def compact_result_row(
 
     if result_schema == "single_arm":
         _apply_single_arm_schema(full_row, compact_row, debug_payload)
-    elif result_schema == "order_run":
-        _apply_order_run_schema(full_row, compact_row, debug_payload)
+    elif result_schema == "bara":
+        _apply_bara_schema(full_row, compact_row, debug_payload)
     else:
-        _apply_adaptive_schema(full_row, compact_row, debug_payload)
+        _apply_selector_schema(full_row, compact_row, debug_payload)
 
     return compact_row, debug_payload
 
@@ -197,7 +197,7 @@ def _apply_single_arm_schema(
     _move_selection_reason_to_debug(full_row, debug_payload)
 
 
-def _apply_adaptive_schema(
+def _apply_selector_schema(
     full_row: dict[str, Any],
     compact_row: dict[str, Any],
     debug_payload: dict[str, Any],
@@ -209,7 +209,7 @@ def _apply_adaptive_schema(
     compact_row["selector_summary"] = _selector_summary(selection_reason)
 
 
-def _apply_order_run_schema(
+def _apply_bara_schema(
     full_row: dict[str, Any],
     compact_row: dict[str, Any],
     debug_payload: dict[str, Any],
@@ -219,7 +219,7 @@ def _apply_order_run_schema(
     _move_features_to_debug(full_row, debug_payload)
     selection_reason = _move_selection_reason_to_debug(full_row, debug_payload)
     compact_row["selector_summary"] = _selector_summary(selection_reason)
-    compact_row["order_run_summary"] = _order_run_summary(selection_reason, full_row)
+    compact_row["bara_summary"] = _bara_summary(selection_reason, full_row)
 
 
 def _base_result_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -230,6 +230,7 @@ def _base_result_row(row: dict[str, Any]) -> dict[str, Any]:
         "feature_vector",
         "selection_reason",
         "selector_summary",
+        "bara_summary",
         "order_run_summary",
         LEGACY_DEBUG_FIELD,
     }
@@ -260,13 +261,14 @@ def _classify_result_schema(row: dict[str, Any], *, result_path: Path) -> str:
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     selection_reason = row.get("selection_reason") if isinstance(row.get("selection_reason"), dict) else {}
     filename = result_path.name
+    if bool(metadata.get("bara_rank_and_allocate")) or bool(selection_reason.get("bara")):
+        return "bara"
     if bool(metadata.get("adaptive_order_run")) or bool(selection_reason.get("order_run")):
-        return "order_run"
-    order_markers = ("_order_", "_order_random_", "_budget_", "_fix_run_")
-    if any(marker in filename for marker in order_markers):
-        return "order_run"
-    if "_adaptive_" in filename:
-        return "adaptive"
+        return "bara"
+    bara_markers = ("_bara_", "_uniform_", "_static_order", "_budget_")
+    legacy_markers = ("_order_", "_order_random_", "_fix_run_")
+    if any(marker in filename for marker in (*bara_markers, *legacy_markers)):
+        return "bara"
     return "single_arm"
 
 
@@ -382,20 +384,47 @@ def _selector_summary(selection_reason: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in summary.items() if value is not None}
 
 
-def _order_run_summary(selection_reason: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
-    trace = selection_reason.get("order_run_execution_trace")
+def _bara_summary(selection_reason: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    trace = selection_reason.get("bara_execution_trace")
+    if not isinstance(trace, list):
+        trace = selection_reason.get("order_run_execution_trace")
     if not isinstance(trace, list):
         trace = []
     compact_trace = [_compact_trace_item(item) for item in trace if isinstance(item, dict)]
     attempted_arms = [item["arm_id"] for item in compact_trace if item.get("arm_id") is not None]
     solved_rank = next((item.get("rank") for item in compact_trace if item.get("passed") is True), None)
     return {
-        "enabled": bool(selection_reason.get("order_run") or row.get("metadata", {}).get("adaptive_order_run")),
-        "random_run": bool(selection_reason.get("random_run") or row.get("metadata", {}).get("adaptive_random_run")),
-        "fix_run": bool(selection_reason.get("fix_run") or row.get("metadata", {}).get("adaptive_fix_run")),
-        "fix_budget": bool(selection_reason.get("fix_budget") or row.get("metadata", {}).get("adaptive_fix_budget")),
-        "free_run": bool(selection_reason.get("free_run") or row.get("metadata", {}).get("adaptive_free_run")),
-        "task_completion_token_budget": selection_reason.get("order_run_task_completion_token_budget") or row.get("completion_token_budget"),
+        "enabled": bool(
+            selection_reason.get("bara")
+            or selection_reason.get("order_run")
+            or row.get("metadata", {}).get("bara_rank_and_allocate")
+            or row.get("metadata", {}).get("adaptive_order_run")
+        ),
+        "uniform": bool(
+            selection_reason.get("bara_uniform_run")
+            or row.get("metadata", {}).get("bara_uniform_run")
+            or row.get("metadata", {}).get("adaptive_random_run")
+        ),
+        "static": bool(
+            selection_reason.get("bara_static_run")
+            or row.get("metadata", {}).get("bara_static_run")
+            or row.get("metadata", {}).get("adaptive_fix_run")
+        ),
+        "static_budget": bool(
+            selection_reason.get("bara_static_budget")
+            or row.get("metadata", {}).get("bara_static_budget")
+            or row.get("metadata", {}).get("adaptive_fix_budget")
+        ),
+        "free_run": bool(
+            selection_reason.get("bara_free_run")
+            or row.get("metadata", {}).get("bara_free_run")
+            or row.get("metadata", {}).get("adaptive_free_run")
+        ),
+        "task_completion_token_budget": (
+            selection_reason.get("bara_task_completion_token_budget")
+            or selection_reason.get("order_run_task_completion_token_budget")
+            or row.get("completion_token_budget")
+        ),
         "attempted_arms": attempted_arms,
         "num_attempted_arms": len(attempted_arms),
         "solved_rank": solved_rank,

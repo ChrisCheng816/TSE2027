@@ -19,8 +19,8 @@ class PairStats:
 
 
 @dataclass(frozen=True)
-class AdaptiveStats:
-    adaptive_file: Path
+class BARAStats:
+    bara_file: Path
     num_tasks: int
     passed_count: int
     mean_completion_tokens: float | None
@@ -36,7 +36,7 @@ class ModelStats:
     single_counts: dict[str, int]
     all_union_count: int
     pair_stats: dict[tuple[str, str], PairStats]
-    adaptive_stats: AdaptiveStats | None = None
+    bara_stats: BARAStats | None = None
 
     @property
     def best_single(self) -> tuple[str, int]:
@@ -157,17 +157,17 @@ def _row_passed(row: dict[str, object]) -> bool:
     )
 
 
-def _load_adaptive_stats(results_dir: Path, model_name: str, dataset: str) -> AdaptiveStats | None:
-    adaptive_files = sorted(results_dir.glob(f"{model_name}_adaptive_*.jsonl"))
-    adaptive_file = adaptive_files[0] if adaptive_files else None
-    if adaptive_file is None or not adaptive_file.exists():
+def _load_bara_stats(results_dir: Path, model_name: str, dataset: str) -> BARAStats | None:
+    bara_files = sorted(results_dir.glob(f"{model_name}_bara_*.jsonl"))
+    bara_file = bara_files[0] if bara_files else None
+    if bara_file is None or not bara_file.exists():
         return None
 
     per_task: dict[str, dict[str, object]] = {}
     arm_pull_counts: dict[str, int] = {}
     completion_tokens: list[float] = []
 
-    with adaptive_file.open() as handle:
+    with bara_file.open() as handle:
         for raw_line in handle:
             raw_line = raw_line.strip()
             if not raw_line:
@@ -181,8 +181,8 @@ def _load_adaptive_stats(results_dir: Path, model_name: str, dataset: str) -> Ad
                 completion_tokens.append(float(completion_value))
             per_task[task_id] = row
 
-    return AdaptiveStats(
-        adaptive_file=adaptive_file,
+    return BARAStats(
+        bara_file=bara_file,
         num_tasks=len(per_task),
         passed_count=sum(1 for row in per_task.values() if _row_passed(row)),
         mean_completion_tokens=(
@@ -255,7 +255,7 @@ def load_model_stats(reward_file: Path, dataset: str) -> ModelStats:
         single_counts=single_counts,
         all_union_count=all_union_count,
         pair_stats=pair_stats,
-        adaptive_stats=_load_adaptive_stats(reward_file.parent, model_name, dataset),
+        bara_stats=_load_bara_stats(reward_file.parent, model_name, dataset),
     )
 
 
@@ -363,41 +363,41 @@ def print_model_summary(stats: ModelStats, sort_pairs_by: str) -> None:
     print(render_table(["metric", "selection", "passed", "pass_rate"], overview_rows))
     print()
 
-    if stats.adaptive_stats is not None:
-        adaptive = stats.adaptive_stats
-        adaptive_rows = [
-            [arm_id, count, percent(count, adaptive.num_tasks)]
-            for arm_id, count in sorted(adaptive.arm_pull_counts.items())
+    if stats.bara_stats is not None:
+        bara = stats.bara_stats
+        bara_rows = [
+            [arm_id, count, percent(count, bara.num_tasks)]
+            for arm_id, count in sorted(bara.arm_pull_counts.items())
         ]
-        print("[Adaptive]")
-        print(f"adaptive_file: {adaptive.adaptive_file}")
-        print(render_table(["arm", "pulls", "pull_rate"], adaptive_rows))
+        print("[BARA]")
+        print(f"bara_file: {bara.bara_file}")
+        print(render_table(["arm", "pulls", "pull_rate"], bara_rows))
         print()
 
-        adaptive_overview_rows = [
-            ["adaptive", "selector", adaptive.passed_count, percent(adaptive.passed_count, adaptive.num_tasks)],
+        bara_overview_rows = [
+            ["bara", "selector", bara.passed_count, percent(bara.passed_count, bara.num_tasks)],
             [
-                "adaptive_vs_best_single",
+                "bara_vs_best_single",
                 f"selector-{best_single_arm}",
-                signed_delta(adaptive.passed_count - best_single_count),
-                percent(adaptive.passed_count, adaptive.num_tasks),
+                signed_delta(bara.passed_count - best_single_count),
+                percent(bara.passed_count, bara.num_tasks),
             ],
             [
-                "adaptive_vs_best_pair",
+                "bara_vs_best_pair",
                 f"selector-{'+'.join(best_pair_key)}",
-                signed_delta(adaptive.passed_count - best_pair_stats.union_count),
-                percent(adaptive.passed_count, adaptive.num_tasks),
+                signed_delta(bara.passed_count - best_pair_stats.union_count),
+                percent(bara.passed_count, bara.num_tasks),
             ],
             [
-                "adaptive_vs_all_arms_union",
+                "bara_vs_all_arms_union",
                 "selector-union",
-                signed_delta(adaptive.passed_count - stats.all_union_count),
-                percent(adaptive.passed_count, adaptive.num_tasks),
+                signed_delta(bara.passed_count - stats.all_union_count),
+                percent(bara.passed_count, bara.num_tasks),
             ],
         ]
-        print(render_table(["metric", "selection", "passed", "pass_rate"], adaptive_overview_rows))
-        if adaptive.mean_completion_tokens is not None:
-            print(f"mean_completion_tokens: {adaptive.mean_completion_tokens:.2f}")
+        print(render_table(["metric", "selection", "passed", "pass_rate"], bara_overview_rows))
+        if bara.mean_completion_tokens is not None:
+            print(f"mean_completion_tokens: {bara.mean_completion_tokens:.2f}")
         print()
 
 
@@ -472,17 +472,17 @@ def print_comparison(baseline: ModelStats, current: ModelStats) -> None:
     print(render_table(["pair", baseline.model_name, current.model_name, "delta"], pair_rows))
     print()
 
-    if baseline.adaptive_stats is not None and current.adaptive_stats is not None:
-        adaptive_rows = [
+    if baseline.bara_stats is not None and current.bara_stats is not None:
+        bara_rows = [
             [
-                "adaptive",
-                str(baseline.adaptive_stats.passed_count),
-                str(current.adaptive_stats.passed_count),
-                signed_delta(current.adaptive_stats.passed_count - baseline.adaptive_stats.passed_count),
+                "bara",
+                str(baseline.bara_stats.passed_count),
+                str(current.bara_stats.passed_count),
+                signed_delta(current.bara_stats.passed_count - baseline.bara_stats.passed_count),
             ]
         ]
-        print("[Adaptive Delta]")
-        print(render_table(["metric", baseline.model_name, current.model_name, "delta"], adaptive_rows))
+        print("[BARA Delta]")
+        print(render_table(["metric", baseline.model_name, current.model_name, "delta"], bara_rows))
         print()
 
 

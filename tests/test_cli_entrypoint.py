@@ -62,13 +62,13 @@ repeated = cli._resolve_config(parser.parse_args(['--run-mode', 'repeated_sampli
 opus_repeated = cli._resolve_config(parser.parse_args(['--run-mode', 'repeated_sampling', '--arm-id', 'A2', '--budget', '20000', '--model-name', 'claude-opus-4.8']))
 repeated_t = cli._resolve_config(parser.parse_args(['--run-mode', 'repeated_sampling', '--arm-id', 'A2', '--budget', '20000', '--t', '0.7']))
 multi_model_args = parser.parse_args(['--run-mode', 'repeated_sampling', '--arm-id', 'A2', '--budget', '20000', '--model-name', 'qwen2.5-32b', 'qwen3-30b'])
-adaptive = cli._resolve_config(parser.parse_args(['--run-mode', 'adaptive']))
+bara = cli._resolve_config(parser.parse_args(['--run-mode', 'bara']))
 assert gpu_config.vllm.cuda_visible_devices == '2,3'
 assert repeated.run_mode == 'repeated_sampling'
 assert repeated.repeated_sampling_arm_id == 'A2'
 assert repeated.arm_ids == ('A2',)
-assert repeated.adaptive.order_run is True
-assert repeated.adaptive.bigcodebench_per_task_completion_token_budget == 20000
+assert repeated.bara.rank_and_allocate is True
+assert repeated.bara.bigcodebench_per_task_completion_token_budget == 20000
 assert cli._requested_model_names(multi_model_args) == ['qwen2.5-32b', 'qwen3-30b']
 assert cli._resolve_config(multi_model_args, model_name='qwen3-30b').model.model_name == 'qwen3-30b'
 assert opus_repeated.model.model_name == 'claude-opus-4.8'
@@ -76,7 +76,8 @@ assert repeated.generation.temperature == 1
 assert repeated.generation.top_p == 0.95
 assert repeated_t.generation.temperature == 0.7
 assert repeated_t.generation.top_p == 0.95
-assert adaptive.run_mode == 'adaptive'
+assert bara.run_mode == 'bara'
+assert bara.bara.rank_and_allocate is True
 """
         result = subprocess.run(
             [sys.executable, "-c", snippet],
@@ -114,6 +115,7 @@ else:
         env = _subprocess_env()
         with tempfile.TemporaryDirectory() as tmpdir:
             snippet = SUBPROCESS_BOOTSTRAP + DATASET_STUB + """
+from dataclasses import replace
 from pathlib import Path
 from codegen_agent import cli
 from codegen_agent.config import PathConfig
@@ -121,24 +123,43 @@ parser = cli.build_parser()
 config = cli._resolve_config(parser.parse_args(['--run-mode', 'repeated_sampling', '--arm-id', 'A2', '--budget', '20000']))
 assert config.arm_ids == ('A2',)
 assert config.repeated_sampling_arm_id == 'A2'
-assert config.adaptive.order_run is True
+assert config.bara.rank_and_allocate is True
 paths = PathConfig(repeated_sampling_results_dir=Path(sys.argv[1]))
 output_path = paths.repeated_sampling_output_path('qwen2.5-32b', 'A2', 'bigcodebench-v0.1.4', budget_label='budget-20000')
 assert output_path.name == 'qwen2.5-32b_A2_budget-20000.jsonl'
 assert output_path.parent == Path(sys.argv[1]) / 'pass_only' / 'qwen2.5-32b'
-order_cfg = cli._resolve_config(parser.parse_args(['--run-mode', 'adaptive', '--order_run', '--budget', '20000']))
-random_cfg = cli._resolve_config(parser.parse_args(['--run-mode', 'adaptive', '--order_run', '--random_run', '--budget', '20000']))
-fix_cfg = cli._resolve_config(parser.parse_args(['--run-mode', 'adaptive', '--order_run', '--fix_run', '--budget', '20000']))
-allocator_cfg = cli._resolve_config(parser.parse_args(['--run-mode', 'adaptive', '--order_run', '--budget', '20000', '--budget-allocator', 'equal_split']))
-assert cli._online_order_run_output_path(config=order_cfg, budget_label='budget-20000').name == 'qwen2.5-32b_order_budget-20000.jsonl'
-assert cli._online_order_run_output_path(config=random_cfg, budget_label='budget-20000').name == 'qwen2.5-32b_random_budget-20000.jsonl'
-assert cli._online_order_run_output_path(config=fix_cfg, budget_label='budget-20000').name == 'qwen2.5-32b_fix_budget-20000.jsonl'
-assert cli._online_order_run_output_path(config=allocator_cfg, budget_label='budget-20000').name == 'qwen2.5-32b_allocator-equal_split_order_budget-20000.jsonl'
+
+main_root = Path(sys.argv[1]) / 'main'
+seed_root = Path(sys.argv[1]) / 'seeds'
+paths = PathConfig(experiment_results_dir=main_root, seed_results_dir=seed_root)
+canonical = cli._resolve_config(parser.parse_args(['--run-mode', 'bara', '--budget', '20000']))
+canonical = replace(canonical, paths=paths)
+bara_seed0 = cli._resolve_config(parser.parse_args(['--run-mode', 'bara', '--budget', '20000']), task_order_seed=0)
+bara_seed0 = replace(bara_seed0, paths=paths)
+uniform = cli._resolve_config(parser.parse_args(['--run-mode', 'bara', '--uniform', '--budget', '20000']), task_order_seed=0)
+uniform = replace(uniform, paths=paths)
+static = cli._resolve_config(parser.parse_args(['--run-mode', 'bara', '--static', '--static-order', 'A0-A1-A2', '--budget', '20000']), task_order_seed=0)
+static = replace(static, paths=paths)
+allocator = cli._resolve_config(parser.parse_args(['--run-mode', 'bara', '--budget', '20000', '--budget-allocator', 'equal_split']))
+allocator = replace(allocator, paths=paths)
+
+assert cli._bara_output_path(config=canonical, budget_label='budget-20000').name == 'qwen2.5-32b_bara_budget-20000.jsonl'
+assert cli._bara_output_path(config=canonical, budget_label='budget-20000').is_relative_to(main_root)
+assert cli._bara_output_path(config=bara_seed0, budget_label='budget-20000').name == 'qwen2.5-32b_bara_seed0_budget-20000.jsonl'
+assert cli._bara_output_path(config=bara_seed0, budget_label='budget-20000').is_relative_to(seed_root)
+assert cli._bara_output_path(config=uniform, budget_label='budget-20000').name == 'qwen2.5-32b_uniform_budget-20000.jsonl'
+assert cli._bara_output_path(config=uniform, budget_label='budget-20000').is_relative_to(main_root)
+assert cli._bara_output_path(config=static, budget_label='budget-20000').name == 'qwen2.5-32b_static_orderA0-A1-A2_budget-20000.jsonl'
+assert cli._bara_output_path(config=allocator, budget_label='budget-20000').name == 'qwen2.5-32b_allocator-equal_split_bara_budget-20000.jsonl'
+assert cli._requested_task_order_seeds(parser.parse_args(['--run-mode', 'bara', '--seeds', '0', '1'])) == [0, 1]
+assert cli._requested_task_order_seeds(parser.parse_args(['--run-mode', 'bara'])) == [None]
+assert cli._requested_task_order_seeds(parser.parse_args(['--run-mode', 'bara', '--uniform'])) == [0]
+
 for argv, expected in [
     (['--run-mode', 'repeated_sampling'], '--arm-id'),
     (['--run-mode', 'repeated_sampling', '--arm-id', 'A2'], '--budget'),
-    (['--run-mode', 'adaptive', '--arm-id', 'A2'], '--arm-id is only supported'),
-    (['--run-mode', 'adaptive', '--arm-ids', 'A0'], '--arm-ids is only supported'),
+    (['--run-mode', 'bara', '--arm-id', 'A2'], '--arm-id is only supported'),
+    (['--run-mode', 'bara', '--arm-ids', 'A0'], '--arm-ids is only supported'),
 ]:
     try:
         cli._resolve_config(parser.parse_args(argv))
@@ -155,6 +176,55 @@ for argv, expected in [
                 text=True,
                 check=False,
             )
+        self.assertEqual(0, result.returncode, msg=result.stderr)
+
+
+    def test_task_order_seeds_shuffle_independently(self) -> None:
+        env = _subprocess_env()
+        snippet = SUBPROCESS_BOOTSTRAP + DATASET_STUB + """
+import random
+from types import SimpleNamespace
+from unittest.mock import patch
+from codegen_agent import cli
+
+parser = cli.build_parser()
+args = parser.parse_args(['--run-mode', 'bara', '--seeds', '0', '1'])
+seeds = cli._requested_task_order_seeds(args)
+assert seeds == [0, 1]
+configs = [cli._resolve_config(args, task_order_seed=seed) for seed in seeds]
+assert configs[0].bara is not configs[1].bara
+assert [config.task_order_seed for config in configs] == [0, 1]
+
+def make_tasks():
+    return [SimpleNamespace(task_id=str(index)) for index in range(8)]
+
+with patch.object(cli, 'load_codegen_tasks', side_effect=lambda *args, **kwargs: make_tasks()):
+    observed = [[task.task_id for task in cli._load_tasks(config)] for config in configs]
+
+expected = []
+for seed in seeds:
+    tasks = make_tasks()
+    random.Random(seed).shuffle(tasks)
+    expected.append([task.task_id for task in tasks])
+
+assert observed == expected
+assert observed[0] != observed[1]
+
+with patch.object(sys, 'argv', ['codegen_agent', '--run-mode', 'bara', '--seeds', '0', '1']), patch.object(cli, '_run_config') as run_config:
+    assert cli.main() == 0
+assert run_config.call_count == 2
+run_configs = [call.args[0] for call in run_config.call_args_list]
+assert [config.task_order_seed for config in run_configs] == [0, 1]
+assert run_configs[0].bara is not run_configs[1].bara
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", snippet],
+            cwd=SUBPROCESS_CWD,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         self.assertEqual(0, result.returncode, msg=result.stderr)
 
     def test_python_m_codegene_agent_cli_invokes_main(self) -> None:

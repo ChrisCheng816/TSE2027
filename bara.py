@@ -593,10 +593,12 @@ class KNNRewardSumUCBSelector:
         )
 
     def _counts_as_first_arm_pull(self, metadata: dict[str, Any]) -> bool:
-        if metadata.get("order_run") is True:
+        if metadata.get("bara") is True or metadata.get("order_run") is True:
+            if metadata.get("bara_is_first_attempt") is not None:
+                return bool(metadata.get("bara_is_first_attempt"))
             if metadata.get("order_run_is_first_attempt") is not None:
                 return bool(metadata.get("order_run_is_first_attempt"))
-            rank = metadata.get("order_run_rank")
+            rank = metadata.get("bara_rank", metadata.get("order_run_rank"))
             if rank is not None:
                 try:
                     return int(rank) == 1
@@ -701,7 +703,6 @@ class KNNArmBudgetAllocator:
             "equal_split",
             "static_prior",
             "empirical_quantile",
-            "uncensored_lognormal_mle",
         }:
             raise ValueError(f"Unsupported allocation_strategy: {allocation_strategy}")
         if not (0.0 < float(budget_quantile) <= 1.0):
@@ -893,15 +894,6 @@ class KNNArmBudgetAllocator:
                 prior_cap=prior_cap,
                 remaining_budget=resolved_remaining_budget,
             )
-        if self.allocation_strategy == "uncensored_lognormal_mle":
-            return self._allocate_uncensored_lognormal_mle(
-                details=details,
-                arm_id=arm_id,
-                selected_neighbors=selected_neighbors,
-                prior_cap=prior_cap,
-                remaining_budget=resolved_remaining_budget,
-            )
-
         return self._allocate_lognormal_mle(
             details=details,
             selected_neighbors=selected_neighbors,
@@ -1040,89 +1032,6 @@ class KNNArmBudgetAllocator:
                 "capped_observations_treated_as_costs": censored_count,
                 "budget_observed_min": min(observed_costs),
                 "budget_observed_max": max(observed_costs),
-                "raw_completion_token_cap": raw_cap,
-                "allocated_completion_token_cap": self._finalize_cap(raw_cap, remaining_budget),
-            }
-        )
-        return details
-
-    def _allocate_uncensored_lognormal_mle(
-        self,
-        *,
-        details: dict[str, Any],
-        arm_id: str,
-        selected_neighbors: list[tuple[float, _ArmBudgetObservation]],
-        prior_cap: float,
-        remaining_budget: int,
-    ) -> dict[str, Any]:
-        local_evidence = [observation for _, observation in selected_neighbors if observation.uncensored]
-        evidence_source = "local"
-        if len(local_evidence) < self.min_budget_neighbors:
-            local_evidence = [observation for observation in self._history_by_arm[arm_id] if observation.uncensored]
-            evidence_source = "global"
-
-        if len(local_evidence) < self.min_budget_neighbors:
-            details["allocation_mode"] = "prior_insufficient_uncensored_budget_neighbors"
-            details["budget_evidence_source"] = evidence_source
-            details["budget_evidence_count"] = len(local_evidence)
-            details["min_budget_neighbors"] = self.min_budget_neighbors
-            details["ignored_censored_count"] = sum(1 for _, observation in selected_neighbors if not observation.uncensored)
-            details["allocated_completion_token_cap"] = self._finalize_cap(prior_cap, remaining_budget)
-            return details
-
-        uncensored_costs = [
-            self._token_lower_bound(observation)
-            for observation in local_evidence
-            if self._token_lower_bound(observation) > 0.0
-        ]
-        if not uncensored_costs:
-            details["allocation_mode"] = "prior_invalid_uncensored_lognormal_mle"
-            details["budget_evidence_source"] = evidence_source
-            details["budget_evidence_count"] = len(local_evidence)
-            details["allocated_completion_token_cap"] = self._finalize_cap(prior_cap, remaining_budget)
-            return details
-
-        log_uncensored = [math.log(value) for value in uncensored_costs]
-        fit = _fit_censored_lognormal(
-            log_uncensored=log_uncensored,
-            log_censored_lower_bounds=[],
-        )
-        if fit is None:
-            details["allocation_mode"] = "prior_invalid_uncensored_lognormal_mle"
-            details["budget_evidence_source"] = evidence_source
-            details["budget_evidence_count"] = len(local_evidence)
-            details["uncensored_count"] = len(log_uncensored)
-            details["allocated_completion_token_cap"] = self._finalize_cap(prior_cap, remaining_budget)
-            return details
-
-        log_mean, log_sigma, fit_details = fit
-        quantile = min(max(1.0 - self.risk_tolerance, 1e-6), 1.0 - 1e-6)
-        z_score = NormalDist().inv_cdf(quantile)
-        try:
-            lognormal_raw_cap = math.exp(log_mean + z_score * log_sigma)
-        except OverflowError:
-            lognormal_raw_cap = float(remaining_budget)
-        if not math.isfinite(lognormal_raw_cap):
-            lognormal_raw_cap = float(remaining_budget)
-        raw_cap = lognormal_raw_cap
-        ignored_censored_count = sum(1 for observation in self._history_by_arm[arm_id] if not observation.uncensored)
-        details.update(
-            {
-                "allocation_mode": f"{evidence_source}_uncensored_lognormal_mle",
-                "budget_evidence_source": evidence_source,
-                "budget_evidence_count": len(local_evidence),
-                "min_budget_neighbors": self.min_budget_neighbors,
-                "uncensored_count": len(uncensored_costs),
-                "ignored_censored_count": ignored_censored_count,
-                "lognormal_mu": log_mean,
-                "lognormal_sigma": log_sigma,
-                **fit_details,
-                "lognormal_quantile": quantile,
-                "lognormal_z_score": z_score,
-                "lognormal_raw_completion_token_cap": lognormal_raw_cap,
-                "prior_floor_applied": False,
-                "budget_uncensored_min": min(uncensored_costs),
-                "budget_uncensored_max": max(uncensored_costs),
                 "raw_completion_token_cap": raw_cap,
                 "allocated_completion_token_cap": self._finalize_cap(raw_cap, remaining_budget),
             }

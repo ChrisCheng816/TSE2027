@@ -1,0 +1,30 @@
+\begin{table}[t]
+\centering
+\scriptsize
+\caption{Ranking quality under pass-only feedback. $^{*}$ marks BARA cells whose paired bootstrap 95\% CI for the improvement over the stronger stronger baseline excludes zero.}
+\setlength{\tabcolsep}{2.2pt}
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{llrrrrrr}
+\toprule
+\multirow{2}{*}{Model} & \multirow{2}{*}{Ranking}
+& \multicolumn{3}{c}{Solve rate}
+& \multicolumn{3}{c}{First-hit rate} \\
+\cmidrule(lr){3-5}\cmidrule(lr){6-8}
+& & 10k & 15k & 20k & 10k & 15k & 20k \\
+\midrule
+Qwen3-30B & BARA & 59.0\%$^{*}$ & 61.9\%$^{*}$ & 62.1\% & 48.4\% & 53.6\%$^{*}$ & 54.1\%$^{*}$ \\
+Qwen3-30B & Static & 56.5\% & 60.5\% & 62.1\% & 48.1\% & 50.2\% & 50.3\% \\
+Qwen3-30B & Uniform & 55.8\% & 60.5\% & 62.1\% & 47.2\% & 49.3\% & 49.9\% \\
+\midrule
+Qwen2.5-32B & BARA & 58.0\%$^{*}$ & 61.1\%$^{*}$ & 61.4\% & 48.1\% & 52.2\%$^{*}$ & 53.3\%$^{*}$ \\
+Qwen2.5-32B & Static & 54.7\% & 60.1\% & 61.1\% & 47.3\% & 49.8\% & 50.7\% \\
+Qwen2.5-32B & Uniform & 54.1\% & 60.1\% & 61.1\% & 46.5\% & 49.3\% & 50.1\% \\
+\midrule
+Opus 4.8 & BARA & 72.4\%$^{*}$ & 76.3\%$^{*}$ & 76.9\% & 64.2\%$^{*}$ & 66.4\% & 68.0\%$^{*}$ \\
+Opus 4.8 & Static & 70.4\% & 75.1\% & 76.1\% & 60.8\% & 66.0\% & 66.9\% \\
+Opus 4.8 & Uniform & 68.0\% & 75.1\% & 76.1\% & 61.5\% & 65.9\% & 66.7\% \\
+\bottomrule
+\end{tabular}
+}
+\label{tab:rq2-bootstrap}
+\end{table}

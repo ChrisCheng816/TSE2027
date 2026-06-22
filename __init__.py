@@ -9,10 +9,10 @@ from .arms import (
     get_upgrade_arms,
     normalize_arm_ids,
 )
-from .adaptive import KNNRewardSumUCBSelector, normalize_selector_algorithm
+from .bara import KNNRewardSumUCBSelector, normalize_selector_algorithm
 from .config import (
     DEFAULT_EXPERIMENT_CONFIG,
-    AdaptiveConfig,
+    BARAConfig,
     BanditConfig,
     BanditStageConfig,
     ExperimentConfig,
@@ -44,7 +44,7 @@ from .types import BigCodeBenchTask, CodeGenTask, GenerationConfig, GenerationRe
 from .dataset_families import BIGCODEBENCH_FAMILY_DATASETS, is_bigcodebench_family_dataset
 
 __all__ = [
-    "AdaptiveConfig",
+    "BARAConfig",
     "BanditConfig",
     "BanditStageConfig",
     "BigCodeBenchTask",

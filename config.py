@@ -21,7 +21,7 @@ MODEL_SPEC_MAP = {spec["name"]: spec["path"] for spec in MODEL_SPECS}
 DEFAULT_MODEL_NAME = MODEL_SPECS[0]["name"]
 
 
-def format_adaptive_arm_ids(arm_ids: tuple[str, ...] | list[str]) -> str:
+def format_bara_arm_ids(arm_ids: tuple[str, ...] | list[str]) -> str:
     normalized_arm_ids = normalize_arm_ids(tuple(arm_ids))
     if not normalized_arm_ids:
         return "no-arms"
@@ -47,6 +47,7 @@ def results_dataset_bucket(dataset_name: str, *, token_optimized: bool = False) 
 class PathConfig:
     experiment_results_dir: Path = DEFAULT_EXPERIMENT_RESULTS_DIR
     repeated_sampling_results_dir: Path = DEFAULT_REPEATED_SAMPLING_RESULTS_DIR
+    seed_results_dir: Path | None = None
 
     def dataset_results_dir(self, dataset_name: str, *, token_optimized: bool = False) -> Path:
         dataset_bucket = results_dataset_bucket(dataset_name, token_optimized=token_optimized)
@@ -113,7 +114,7 @@ class PathConfig:
     def reward_output_path(self, model_name: str, dataset_name: str) -> Path:
         return self.model_results_dir(model_name, dataset_name) / f"{model_name}.reward_table.jsonl"
 
-    def adaptive_output_path(
+    def bara_output_path(
         self,
         model_name: str,
         dataset_name: str,
@@ -121,14 +122,14 @@ class PathConfig:
         *,
         budget_label: str | None = None,
     ) -> Path:
-        adaptive_arm_ids = format_adaptive_arm_ids(arm_ids)
+        bara_arm_ids = format_bara_arm_ids(arm_ids)
         budget_suffix = f"_{budget_label}" if budget_label else ""
         return (
             self.model_results_dir(model_name, dataset_name)
-            / f"{model_name}_adaptive_{adaptive_arm_ids}{budget_suffix}.jsonl"
+            / f"{model_name}_bara_{bara_arm_ids}{budget_suffix}.jsonl"
         )
 
-    def adaptive_summary_path(
+    def bara_summary_path(
         self,
         model_name: str,
         dataset_name: str,
@@ -136,20 +137,18 @@ class PathConfig:
         *,
         budget_label: str | None = None,
     ) -> Path:
-        adaptive_arm_ids = format_adaptive_arm_ids(arm_ids)
+        bara_arm_ids = format_bara_arm_ids(arm_ids)
         budget_suffix = f"_{budget_label}" if budget_label else ""
         return (
             self.model_results_dir(model_name, dataset_name)
-            / f"{model_name}_adaptive_{adaptive_arm_ids}{budget_suffix}.summary.json"
+            / f"{model_name}_bara_{bara_arm_ids}{budget_suffix}.summary.json"
         )
 
 
 @dataclass(frozen=True)
 class BanditStageConfig:
     # ===== Mainline selector: local kNN-UCB =====
-    # Used by --order_run and the order-suite variants that depend on adaptive
-    # ranking. --random ignores the ranking after selection; --fix replaces it
-    # with a deterministic order.
+    # Used by BARA and the Uniform/Static ranking baselines.
     algorithm: str = "knn"
     # min_pulls_per_arm is still global cold-start exploration; after cold start,
     # knn_ucb_count_scope="local" makes the UCB denominator use local neighbor counts.
@@ -172,52 +171,51 @@ class BanditConfig:
 
 @dataclass(frozen=True)
 
-class AdaptiveConfig:
-    # ===== Mainline order-suite controls =====
-    # Applies to --order_run, --fix, and --random suite variants.
+class BARAConfig:
+    # ===== Mainline BARA controls =====
     selector_feedback_metric: str = "reward"
     # Dataset-specific budgets are used first for BigCodeBench.
     total_completion_token_budget: int | None = None
     bigcodebench_per_task_completion_token_budget: int | None = 15000
     per_task_completion_token_budget: int | None = None
-    order_run: bool = False
-    random_run: bool = False
-    fix_run: bool = False
-    fix_budget: bool = False
+    rank_and_allocate: bool = False
+    uniform_run: bool = False
+    static_run: bool = False
+    static_budget: bool = False
     free_run: bool = False
-    order_run_random_seed: int = 0
-    order_run_fix_start: str = "A0"
+    task_order_seed: int | None = None
+    static_order: str = "A0-A1-A2"
 
     # ===== Mainline adaptive budget allocator =====
-    # Used by --order_run, --fix, and --random.
+    # Used by BARA, Uniform, and Static.
     # mle fits a right-censored log-normal cost model for adaptive caps.
     # Additional ablations are available via --budget-allocator:
-    # empirical_quantile, uncensored_lognormal_mle, equal_split, and static_prior.
-    order_run_budget_allocator: str = "mle"
-    order_run_budget_quantile: float = 0.90
-    order_run_budget_min_neighbors: int = 20
+    # empirical_quantile, equal_split, and static_prior.
+    budget_allocator: str = "mle"
+    budget_quantile: float = 0.90
+    budget_min_neighbors: int = 20
 
     # Fallback prior split used when empirical budget evidence is too sparse.
     # The MLE allocator also uses this split when log-normal MLE cannot be fit.
     # Mainline default gives the higher-cost A2 repair arm a larger fallback share.
-    order_run_budget_prior_weights: dict[str, float] = field(
+    budget_prior_weights: dict[str, float] = field(
         default_factory=lambda: {"A0": 1.0, "A1": 1.0, "A2": 2.0}
     )
 
     # ===== Alternative / legacy adaptive knobs =====
     # selector_feedback_metric="pass_at_k" is available for ablations.
-    # order_run_budget_epsilon is the MLE tail risk.
-    order_run_budget_epsilon: float = 0.01
+    # budget_epsilon is the MLE tail risk.
+    budget_epsilon: float = 0.01
 
 
-def adaptive_per_task_completion_token_budget(
-    adaptive_config: AdaptiveConfig,
+def bara_per_task_completion_token_budget(
+    bara_config: BARAConfig,
     dataset_name: str,
 ) -> int | None:
     dataset_bucket = results_dataset_bucket(dataset_name)
     if dataset_bucket in {"pass_only", "token_aware"}:
-        return adaptive_config.bigcodebench_per_task_completion_token_budget
-    return adaptive_config.per_task_completion_token_budget
+        return bara_config.bigcodebench_per_task_completion_token_budget
+    return bara_config.per_task_completion_token_budget
 
 
 @dataclass(frozen=True)
@@ -303,12 +301,13 @@ class VLLMConfig:
 @dataclass(frozen=True)
 class ExperimentConfig:
     run_mode: str = "all_arms"
+    token_aware: bool = False
     dataset_name: str = DATASET_NAME
     arm_ids: tuple[str, ...] = DEFAULT_ARM_SET
     all_arms_compute_reward_and_features: bool = False
     repeated_sampling_arm_id: str | None = None
     limit: int | None = None
-    shuffle_seed: int | None = None
+    task_order_seed: int | None = None
     batch_size: int = 16
     generation_seed: int | None = 42
     num_samples_per_task: int = 1
@@ -317,7 +316,7 @@ class ExperimentConfig:
     progress_interval: int = 50
     paths: PathConfig = field(default_factory=PathConfig)
     bandit: BanditConfig = field(default_factory=BanditConfig)
-    adaptive: AdaptiveConfig = field(default_factory=AdaptiveConfig)
+    bara: BARAConfig = field(default_factory=BARAConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     token_reward: RewardConfig = field(default_factory=TokenOptimizedRewardConfig)
     warm_start: WarmStartConfig = field(default_factory=WarmStartConfig)

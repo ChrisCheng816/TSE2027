@@ -17,20 +17,24 @@ def build_experiment_summary(
         return float(value)
 
     def _attempted_arm_count(record: Any) -> int:
-        attempted_arms = _order_run_attempted_arms(record)
+        attempted_arms = _bara_attempted_arms(record)
         if attempted_arms:
             return len(attempted_arms)
         return 1
 
-    def _order_run_attempted_arms(record: Any) -> list[str]:
+    def _bara_attempted_arms(record: Any) -> list[str]:
         metadata = getattr(record, "metadata", None)
         if isinstance(metadata, dict):
-            attempted_arms = metadata.get("adaptive_attempted_arms")
+            attempted_arms = metadata.get("bara_attempted_arms")
+            if not attempted_arms:
+                attempted_arms = metadata.get("adaptive_attempted_arms")
             if isinstance(attempted_arms, list) and attempted_arms:
                 return [str(arm_id) for arm_id in attempted_arms]
         selection_reason = getattr(record, "selection_reason", None)
         if isinstance(selection_reason, dict):
-            attempted_arms = selection_reason.get("order_run_execution_trace")
+            attempted_arms = selection_reason.get("bara_execution_trace")
+            if not attempted_arms:
+                attempted_arms = selection_reason.get("order_run_execution_trace")
             if isinstance(attempted_arms, list) and attempted_arms:
                 return [
                     str(item.get("arm_id"))
@@ -71,24 +75,24 @@ def build_experiment_summary(
     arm_prompt_token_sums: dict[str, float] = {arm_id: 0.0 for arm_id in ordered_arm_ids}
     arm_completion_token_sums: dict[str, float] = {arm_id: 0.0 for arm_id in ordered_arm_ids}
     arm_total_token_sums: dict[str, float] = {arm_id: 0.0 for arm_id in ordered_arm_ids}
-    order_run_arm_attempt_position_counts: dict[str, dict[str, int]] = {
+    bara_arm_attempt_position_counts: dict[str, dict[str, int]] = {
         arm_id: {"first": 0, "second": 0, "third": 0}
         for arm_id in ordered_arm_ids
     }
-    has_order_run_attempts = False
+    has_bara_attempts = False
     for record in records:
         arm_pull_counts[record.arm_id] += 1
-        attempted_arms = _order_run_attempted_arms(record)
+        attempted_arms = _bara_attempted_arms(record)
         if attempted_arms:
-            has_order_run_attempts = True
+            has_bara_attempts = True
             for position_name, arm_id in zip(("first", "second", "third"), attempted_arms):
-                if arm_id not in order_run_arm_attempt_position_counts:
-                    order_run_arm_attempt_position_counts[arm_id] = {
+                if arm_id not in bara_arm_attempt_position_counts:
+                    bara_arm_attempt_position_counts[arm_id] = {
                         "first": 0,
                         "second": 0,
                         "third": 0,
                     }
-                order_run_arm_attempt_position_counts[arm_id][position_name] += 1
+                bara_arm_attempt_position_counts[arm_id][position_name] += 1
         if record.reward is not None:
             arm_reward_sums[record.arm_id] += record.reward
         prompt_token_value = _maybe_float(getattr(record, "prompt_tokens", None))
@@ -142,6 +146,6 @@ def build_experiment_summary(
         "arm_mean_completion_tokens": arm_mean_completion_tokens,
         "arm_mean_total_tokens": arm_mean_total_tokens,
     }
-    if has_order_run_attempts:
-        summary["order_run_arm_attempt_position_counts"] = order_run_arm_attempt_position_counts
+    if has_bara_attempts:
+        summary["bara_arm_attempt_position_counts"] = bara_arm_attempt_position_counts
     return summary

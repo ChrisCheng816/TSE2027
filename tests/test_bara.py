@@ -25,7 +25,7 @@ from codegen_agent.arms import (
     get_upgrade_arms,
     normalize_arm_ids,
 )
-from codegen_agent.bandits import KNNArmBudgetAllocator, KNNRewardSumUCBSelector
+from codegen_agent.bara import KNNArmBudgetAllocator, KNNRewardSumUCBSelector
 from codegen_agent.config import DEFAULT_EXPERIMENT_CONFIG, PathConfig, RewardConfig, get_model_choices, resolve_model_path
 from codegen_agent.dataset import (
     get_dataset_choices,
@@ -208,7 +208,7 @@ class KNNRewardSumUCBSelectorTests(unittest.TestCase):
         self.assertCountEqual(["A0", "A1"], decision.details["ranked_arms"][:2])
         self.assertEqual("A2", decision.details["ranked_arms"][2])
 
-    def test_order_run_min_pulls_counts_first_attempts_not_later_attempts(self) -> None:
+    def test_rank_and_allocate_min_pulls_counts_first_attempts_not_later_attempts(self) -> None:
         selector = KNNRewardSumUCBSelector(
             arm_ids=["A0", "A2", "A1"],
             feature_dim=2,
@@ -223,7 +223,7 @@ class KNNRewardSumUCBSelectorTests(unittest.TestCase):
             [1.0, 0.0],
             1.0,
             solved=True,
-            metadata={"task_id": "task-1", "order_run": True, "order_run_rank": 2},
+            metadata={"task_id": "task-1", "bara": True, "bara_rank": 2},
         )
 
         decision = selector.select([1.0, 0.0])
@@ -600,7 +600,7 @@ def _evaluate_by_output(task: CodeGenTask, cleaned_output: str, *, timeout_sec: 
     }
 
 
-class AdaptiveBanditTests(unittest.TestCase):
+class BARATests(unittest.TestCase):
     def test_prompt_assets_exist_in_dedicated_directory(self) -> None:
         root = Path("prompts")
         expected = [
@@ -640,7 +640,7 @@ class AdaptiveBanditTests(unittest.TestCase):
         self.assertIn("Solve it.", rendered)
 
     def test_default_selector_feedback_uses_reward(self) -> None:
-        self.assertEqual("reward", DEFAULT_EXPERIMENT_CONFIG.adaptive.selector_feedback_metric)
+        self.assertEqual("reward", DEFAULT_EXPERIMENT_CONFIG.bara.selector_feedback_metric)
 
     def test_default_reward_version_is_v2(self) -> None:
         self.assertEqual("v2", DEFAULT_EXPERIMENT_CONFIG.reward.reward_version)
@@ -1803,8 +1803,8 @@ class AdaptiveBanditTests(unittest.TestCase):
 
 
 
-    def test_single_stage_adaptive_runner_updates_selector_once(self) -> None:
-        task = _task("adaptive-task", "Return the input from task_func.", entry_point="task_func")
+    def test_single_stage_bara_runner_updates_selector_once(self) -> None:
+        task = _task("bara-task", "Return the input from task_func.", entry_point="task_func")
         selector = _FixedSelector("A2")
         model_client = _ScriptedModelClient(
             [
@@ -1834,7 +1834,7 @@ class AdaptiveBanditTests(unittest.TestCase):
             }
 
         with patch("codegen_agent.runner.evaluate_self_test_completion", side_effect=_self_test):
-            records = runner.run_adaptive(
+            records = runner.run_bara(
                 [task],
                 num_samples_per_task=1,
                 pass_k=1,
@@ -1938,8 +1938,8 @@ class AdaptiveBanditTests(unittest.TestCase):
         self.assertIn("Passed tests: 3/5", model_client.prompt_history[1].user)
         self.assertNotIn("official failed", model_client.prompt_history[1].user)
 
-    def test_adaptive_sg_selection_runs_shared_self_test_workflow(self) -> None:
-        task = _task("sg-self-test-adaptive", "Return the input from task_func.", entry_point="task_func")
+    def test_bara_sg_selection_runs_shared_self_test_workflow(self) -> None:
+        task = _task("sg-self-test-bara", "Return the input from task_func.", entry_point="task_func")
         selector = _FixedSelector("A2")
         model_client = _ScriptedModelClient(
             [
@@ -1987,7 +1987,7 @@ class AdaptiveBanditTests(unittest.TestCase):
         )
 
         with patch("codegen_agent.runner.evaluate_self_test_completion", side_effect=_self_test):
-            records = runner.run_adaptive(
+            records = runner.run_bara(
                 [task],
                 num_samples_per_task=1,
                 pass_k=1,
@@ -2163,7 +2163,7 @@ class AdaptiveBanditTests(unittest.TestCase):
         self.assertIn("AssertionError: official failed", model_client.prompt_history[2].user)
         self.assertNotIn("AssertionError: self-test failed", model_client.prompt_history[2].user)
 
-    def test_adaptive_skips_self_test_for_bigcodebench_17(self) -> None:
+    def test_bara_skips_self_test_for_bigcodebench_17(self) -> None:
         task = _task("BigCodeBench/17", "Manage processes using task_func.", entry_point="task_func")
         selector = _FixedSelector("A2")
         model_client = _ScriptedModelClient(
@@ -2200,7 +2200,7 @@ class AdaptiveBanditTests(unittest.TestCase):
         )
 
         with patch("codegen_agent.runner.evaluate_self_test_completion", side_effect=_self_test):
-            records = runner.run_adaptive(
+            records = runner.run_bara(
                 [task],
                 num_samples_per_task=1,
                 pass_k=1,
@@ -2347,7 +2347,7 @@ class AdaptiveBanditTests(unittest.TestCase):
         self.assertNotIn("a2_batch draft_official_eval_end arm=A2", joined)
         self.assertNotIn("a2_batch draft_eval_task_end arm=A2", joined)
 
-    def test_adaptive_respects_total_completion_budget_for_repair_stage(self) -> None:
+    def test_bara_respects_total_completion_budget_for_repair_stage(self) -> None:
         tasks = [
             _task(f"budget-task-{index}", "Return the input from task_func.", entry_point="task_func")
             for index in range(3)
@@ -2358,12 +2358,12 @@ class AdaptiveBanditTests(unittest.TestCase):
             model_client=model_client,
             selector=selector,
             generation_config=GenerationConfig(max_new_tokens=64),
-            adaptive_config=replace(DEFAULT_EXPERIMENT_CONFIG.adaptive, total_completion_token_budget=4),
+            bara_config=replace(DEFAULT_EXPERIMENT_CONFIG.bara, total_completion_token_budget=4),
             arms=get_partition_arms(["A0", "A2"]),
             evaluator=_evaluate_by_output,
         )
 
-        records = runner.run_adaptive(
+        records = runner.run_bara(
             tasks,
             num_samples_per_task=1,
             pass_k=1,
@@ -2374,8 +2374,8 @@ class AdaptiveBanditTests(unittest.TestCase):
         self.assertLessEqual(sum(record.completion_tokens for record in records), 4)
         self.assertEqual(4, len(model_client.prompt_history))
 
-    def test_default_adaptive_total_completion_budget_is_unbounded(self) -> None:
-        self.assertIsNone(DEFAULT_EXPERIMENT_CONFIG.adaptive.total_completion_token_budget)
+    def test_default_bara_total_completion_budget_is_unbounded(self) -> None:
+        self.assertIsNone(DEFAULT_EXPERIMENT_CONFIG.bara.total_completion_token_budget)
 
 
 
@@ -2408,7 +2408,7 @@ class AdaptiveBanditTests(unittest.TestCase):
             }
 
         with patch("codegen_agent.runner.evaluate_self_test_completion", side_effect=_self_test):
-            records = runner.run_adaptive(
+            records = runner.run_bara(
                 [task],
                 num_samples_per_task=1,
                 pass_k=1,
@@ -2560,8 +2560,8 @@ class AdaptiveBanditTests(unittest.TestCase):
             record.predictions[0]["details"]["plan"],
         )
 
-    def test_adaptive_runner_executes_selected_a1_arm_instead_of_falling_back_to_a0(self) -> None:
-        task = _task("adaptive-a1", "Return a good value from task_func.", entry_point="task_func")
+    def test_bara_runner_executes_selected_a1_arm_instead_of_falling_back_to_a0(self) -> None:
+        task = _task("bara-a1", "Return a good value from task_func.", entry_point="task_func")
         final_code = "def task_func():\n    return 'good'\n"
         model_client = _ScriptedModelClient(
             [
@@ -2598,7 +2598,7 @@ class AdaptiveBanditTests(unittest.TestCase):
             evaluator=_evaluate_code_only,
         )
 
-        records = runner.run_adaptive(
+        records = runner.run_bara(
             [task],
             num_samples_per_task=1,
             pass_k=1,
@@ -2608,7 +2608,7 @@ class AdaptiveBanditTests(unittest.TestCase):
         self.assertEqual(1, len(records))
         self.assertEqual("A1", records[0].arm_id)
         self.assertEqual("A1", records[0].selection_reason["selector"]["selected_arm"])
-        self.assertEqual("A1", records[0].metadata["adaptive_selected_arm"])
+        self.assertEqual("A1", records[0].metadata["bara_selected_arm"])
         self.assertEqual([final_code.rstrip()], observed_cleaned_outputs)
         self.assertEqual(1, len(model_client.prompt_history))
         self.assertEqual([2048], model_client.max_new_tokens_history)
@@ -2657,7 +2657,7 @@ class AdaptiveBanditTests(unittest.TestCase):
                 evaluation_timeout_sec=1,
             )
 
-    def test_run_adaptive_rejects_unsupported_pass_k(self) -> None:
+    def test_run_bara_rejects_unsupported_pass_k(self) -> None:
         task = _task("pass-k", "Return the input from task_func.", entry_point="task_func")
         runner = ExperimentRunner(
             model_client=_ScriptedModelClient(["GOOD_CODE"]),
@@ -2668,7 +2668,7 @@ class AdaptiveBanditTests(unittest.TestCase):
         )
 
         with self.assertRaises(ValueError):
-            runner.run_adaptive(
+            runner.run_bara(
                 [task],
                 num_samples_per_task=1,
                 pass_k=2,
@@ -2766,7 +2766,7 @@ class AdaptiveBanditTests(unittest.TestCase):
             ), patch.object(
                 cli, "write_jsonl", side_effect=_capture_rows
             ):
-                cli._run_all_arms(config, static_completion=None, run_adaptive_after_all_arms=False)
+                cli._run_all_arms(config, static_completion=None, run_bara_after_all_arms=False)
 
         self.assertEqual(2, len(captured_rows))
         self.assertIn("context_feature_names", captured_rows[0])
@@ -2831,7 +2831,7 @@ class AdaptiveBanditTests(unittest.TestCase):
             ), patch.object(
                 cli, "write_jsonl"
             ) as write_jsonl_mock:
-                cli._run_all_arms(config, static_completion=None, run_adaptive_after_all_arms=False)
+                cli._run_all_arms(config, static_completion=None, run_bara_after_all_arms=False)
 
         write_jsonl_mock.assert_not_called()
 
@@ -2971,7 +2971,7 @@ class AdaptiveBanditTests(unittest.TestCase):
             ), patch.object(
                 cli, "write_jsonl", side_effect=_capture_rows
             ):
-                cli._run_all_arms(config, static_completion=None, run_adaptive_after_all_arms=False)
+                cli._run_all_arms(config, static_completion=None, run_bara_after_all_arms=False)
 
         sg_row = next(row for row in captured_rows if row["arm_id"] == "A2")
         self.assertEqual("repair", sg_row["decision_selector_stage"])
@@ -2979,33 +2979,33 @@ class AdaptiveBanditTests(unittest.TestCase):
         self.assertEqual([1.0, 1.0], sg_row["decision_context_vector"])
         self.assertIn("decision_reward", sg_row)
 
-    def test_cli_adaptive_mode_uses_all_registered_arms_by_default(self) -> None:
+    def test_cli_bara_mode_uses_all_registered_arms_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = replace(
                 DEFAULT_EXPERIMENT_CONFIG,
                 paths=PathConfig(experiment_results_dir=Path(tmpdir)),
                 limit=1,
-                run_mode="adaptive",
+                run_mode="bara",
             )
             tasks = [_task("dg-1", "Return the input from task_func.", entry_point="task_func")]
             with patch.object(cli, "_load_tasks", return_value=tasks), patch.object(
-                cli, "_run_adaptive_mainline", return_value=[]
-            ) as run_adaptive, patch.object(cli, "_write_adaptive_outputs"):
-                cli._run_adaptive(config, static_completion=None)
+                cli, "_run_bara_mainline", return_value=[]
+            ) as run_bara, patch.object(cli, "_write_bara_outputs"):
+                cli._run_bara(config, static_completion=None)
 
-        adaptive_arms = tuple(arm.arm_id for arm in run_adaptive.call_args.kwargs["arms"])
-        self.assertEqual(("A0", "A2", "A2", "A1"), adaptive_arms)
+        bara_arms = tuple(arm.arm_id for arm in run_bara.call_args.kwargs["arms"])
+        self.assertEqual(("A0", "A1", "A2"), bara_arms)
 
-    def test_adaptive_paths_include_normalized_arm_ids(self) -> None:
+    def test_bara_paths_include_normalized_arm_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             paths = PathConfig(experiment_results_dir=Path(tmpdir))
 
-            output_path = paths.adaptive_output_path(
+            output_path = paths.bara_output_path(
                 "qwen2.5-32b",
                 "bigcodebench-v0.1.4",
                 ("A2", "A0"),
             )
-            summary_path = paths.adaptive_summary_path(
+            summary_path = paths.bara_summary_path(
                 "qwen2.5-32b",
                 "bigcodebench-v0.1.4",
                 ("A2", "A0"),
@@ -3015,28 +3015,28 @@ class AdaptiveBanditTests(unittest.TestCase):
             Path(tmpdir)
             / "pass_only"
             / "qwen2.5-32b"
-            / "qwen2.5-32b_adaptive_A0-A2.jsonl",
+            / "qwen2.5-32b_bara_A0-A2.jsonl",
             output_path,
         )
         self.assertEqual(
             Path(tmpdir)
             / "pass_only"
             / "qwen2.5-32b"
-            / "qwen2.5-32b_adaptive_A0-A2.summary.json",
+            / "qwen2.5-32b_bara_A0-A2.summary.json",
             summary_path,
         )
 
-    def test_adaptive_paths_can_include_order_run_budget_label(self) -> None:
+    def test_bara_paths_can_include_budget_label(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             paths = PathConfig(experiment_results_dir=Path(tmpdir))
 
-            output_path = paths.adaptive_output_path(
+            output_path = paths.bara_output_path(
                 "qwen2.5-32b",
                 "bigcodebench-v0.1.4",
                 ("A2", "A0"),
                 budget_label="budget-15000",
             )
-            summary_path = paths.adaptive_summary_path(
+            summary_path = paths.bara_summary_path(
                 "qwen2.5-32b",
                 "bigcodebench-v0.1.4",
                 ("A2", "A0"),
@@ -3047,14 +3047,14 @@ class AdaptiveBanditTests(unittest.TestCase):
             Path(tmpdir)
             / "pass_only"
             / "qwen2.5-32b"
-            / "qwen2.5-32b_adaptive_A0-A2_budget-15000.jsonl",
+            / "qwen2.5-32b_bara_A0-A2_budget-15000.jsonl",
             output_path,
         )
         self.assertEqual(
             Path(tmpdir)
             / "pass_only"
             / "qwen2.5-32b"
-            / "qwen2.5-32b_adaptive_A0-A2_budget-15000.summary.json",
+            / "qwen2.5-32b_bara_A0-A2_budget-15000.summary.json",
             summary_path,
         )
 
@@ -3130,7 +3130,7 @@ class AdaptiveBanditTests(unittest.TestCase):
             ) as build_runner, patch.object(cli, "_write_records"), patch.object(cli, "_write_summary"), patch.object(
                 cli, "write_jsonl"
             ):
-                cli._run_all_arms(config, static_completion=None, run_adaptive_after_all_arms=False)
+                cli._run_all_arms(config, static_completion=None, run_bara_after_all_arms=False)
 
         self.assertIn("apply_warm_start", build_runner.call_args.kwargs)
         self.assertFalse(build_runner.call_args.kwargs["apply_warm_start"])
@@ -3160,7 +3160,7 @@ class AdaptiveBanditTests(unittest.TestCase):
 
 
 
-    def test_build_runner_applies_warm_start_rows_before_adaptive(self) -> None:
+    def test_build_runner_applies_warm_start_rows_before_bara(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = replace(
                 DEFAULT_EXPERIMENT_CONFIG,
@@ -3592,7 +3592,7 @@ class AdaptiveBanditTests(unittest.TestCase):
             evaluator=_evaluate_by_output,
         )
 
-        records = runner.run_adaptive(
+        records = runner.run_bara(
             [task],
             num_samples_per_task=1,
             pass_k=1,
@@ -3606,8 +3606,13 @@ class AdaptiveBanditTests(unittest.TestCase):
         self.assertEqual("v2", records[0].reward_components["reward_version"])
         self.assertEqual("v2", records[0].to_dict()["metadata"]["reward_version"])
 
-    def test_online_order_run_marks_over_cap_attempt_failed_and_charges_allocated_cap(self) -> None:
-        task = _task("order-run-over-cap", "Return the input from task_func.", entry_point="task_func")
+    def test_online_rank_and_allocate_marks_over_cap_attempt_failed_and_charges_allocated_cap(self) -> None:
+        task = _task(
+            "bara-over-cap",
+            "Return the input from task_func.",
+            entry_point="task_func",
+            dataset_name="bigcodebench-v0.1.4",
+        )
 
         class _RankedSelector:
             def __init__(self) -> None:
@@ -3682,9 +3687,9 @@ class AdaptiveBanditTests(unittest.TestCase):
             model_client=model_client,
             selector=selector,
             generation_config=GenerationConfig(max_new_tokens=4096),
-            adaptive_config=replace(
-                DEFAULT_EXPERIMENT_CONFIG.adaptive,
-                order_run=True,
+            bara_config=replace(
+                DEFAULT_EXPERIMENT_CONFIG.bara,
+                rank_and_allocate=True,
                 per_task_completion_token_budget=1000,
             ),
             budget_allocator=budget_allocator,
@@ -3697,14 +3702,14 @@ class AdaptiveBanditTests(unittest.TestCase):
             {"extract": lambda self, task: FeatureExtractionResult(["f1"], [1.0], {})},
         )()
 
-        records = runner.run_adaptive(
+        records = runner.run_bara(
             [task],
             num_samples_per_task=1,
             pass_k=1,
             evaluation_timeout_sec=1,
         )
 
-        trace = records[0].selection_reason["order_run_execution_trace"]
+        trace = records[0].selection_reason["bara_execution_trace"]
         self.assertEqual("A1", records[0].arm_id)
         self.assertEqual(["A0", "A1"], [item["arm_id"] for item in trace])
         self.assertEqual(True, trace[0]["over_allocated_token_cap"])
@@ -3736,7 +3741,7 @@ class AdaptiveBanditTests(unittest.TestCase):
             evaluator=_evaluate_by_output,
         )
 
-        records = runner.run_adaptive(
+        records = runner.run_bara(
             [task],
             num_samples_per_task=1,
             pass_k=1,

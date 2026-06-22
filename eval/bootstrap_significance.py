@@ -2,7 +2,7 @@
 """Paired bootstrap significance tests for the BigCodeBench result tables.
 
 The script uses one statistical procedure everywhere: paired bootstrap over
-aligned task ids. Table-specific code only decides which per-task adaptive and
+aligned task ids. Table-specific code only decides which per-task BARA and
 baseline series correspond to the table cell.
 """
 
@@ -27,19 +27,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 RQ2_TABLE = {
     "qwen3-30b": {
-        "Fixed": {"solve": [56.3, 60.5, 62.1], "firsthit": [48.1, 49.0, 49.4]},
-        "Random": {"solve": [55.8, 60.5, 62.1], "firsthit": [46.3, 49.6, 50.1]},
-        "Task-adaptive": {"solve": [59.0, 61.9, 62.1], "firsthit": [48.5, 53.6, 54.1]},
+        "Static": {"solve": [56.3, 60.5, 62.1], "firsthit": [48.1, 49.0, 49.4]},
+        "Uniform": {"solve": [55.8, 60.5, 62.1], "firsthit": [46.3, 49.6, 50.1]},
+        "BARA": {"solve": [59.0, 61.9, 62.1], "firsthit": [48.5, 53.6, 54.1]},
     },
     "qwen2.5-32b": {
-        "Fixed": {"solve": [54.5, 60.2, 61.1], "firsthit": [46.7, 49.6, 50.4]},
-        "Random": {"solve": [54.4, 60.1, 61.1], "firsthit": [46.1, 48.3, 49.2]},
-        "Task-adaptive": {"solve": [58.0, 61.1, 61.4], "firsthit": [48.1, 52.2, 53.3]},
+        "Static": {"solve": [54.5, 60.2, 61.1], "firsthit": [46.7, 49.6, 50.4]},
+        "Uniform": {"solve": [54.4, 60.1, 61.1], "firsthit": [46.1, 48.3, 49.2]},
+        "BARA": {"solve": [58.0, 61.1, 61.4], "firsthit": [48.1, 52.2, 53.3]},
     },
     "claude-opus-4.8": {
-        "Fixed": {"solve": [69.4, 74.4, 76.1], "firsthit": [62.5, 66.1, 65.6]},
-        "Random": {"solve": [68.7, 75.1, 76.1], "firsthit": [62.4, 65.8, 66.1]},
-        "Task-adaptive": {"solve": [72.4, 76.3, 76.9], "firsthit": [64.2, 66.4, 68.0]},
+        "Static": {"solve": [69.4, 74.4, 76.1], "firsthit": [62.5, 66.1, 65.6]},
+        "Uniform": {"solve": [68.7, 75.1, 76.1], "firsthit": [62.4, 65.8, 66.1]},
+        "BARA": {"solve": [72.4, 76.3, 76.9], "firsthit": [64.2, 66.4, 68.0]},
     },
 }
 
@@ -48,19 +48,19 @@ RQ3_TABLE = {
         "Static prior split": {"solve": [56.1, 60.6, 61.8], "capped": [15.6, 5.7, 1.5]},
         "Equal split": {"solve": [56.5, 59.6, 61.2], "capped": [13.7, 6.9, 3.0]},
         "Empirical quantile": {"solve": [57.5, 60.8, 61.2], "capped": [17.8, 6.0, 3.7]},
-        "Adaptive budget": {"solve": [59.0, 61.9, 62.1], "capped": [9.7, 1.2, 0.2]},
+        "BARA budget": {"solve": [59.0, 61.9, 62.1], "capped": [9.7, 1.2, 0.2]},
     },
     "qwen2.5-32b": {
         "Static prior split": {"solve": [56.9, 60.2, 60.9], "capped": [12.6, 3.9, 2.8]},
         "Equal split": {"solve": [56.5, 58.9, 60.4], "capped": [12.7, 6.3, 2.7]},
         "Empirical quantile": {"solve": [55.9, 61.0, 61.1], "capped": [17.7, 3.9, 3.5]},
-        "Adaptive budget": {"solve": [58.0, 61.1, 61.4], "capped": [10.3, 1.6, 0.8]},
+        "BARA budget": {"solve": [58.0, 61.1, 61.4], "capped": [10.3, 1.6, 0.8]},
     },
     "claude-opus-4.8": {
         "Static prior split": {"solve": [67.9, 74.7, 75.4], "capped": [30.5, 6.4, 6.4]},
         "Equal split": {"solve": [71.0, 74.0, 75.4], "capped": [18.5, 7.5, 3.0]},
         "Empirical quantile": {"solve": [66.1, 73.0, 75.8], "capped": [33.0, 12.0, 5.8]},
-        "Adaptive budget": {"solve": [72.4, 76.3, 76.9], "capped": [16.2, 3.6, 1.2]},
+        "BARA budget": {"solve": [72.4, 76.3, 76.9], "capped": [16.2, 3.6, 1.2]},
     },
 }
 
@@ -168,7 +168,7 @@ def load_run(path: Path, *, single_arm_budget: int | None = None) -> RunArrays:
             else:
                 solved = 1.0 if passed else 0.0
 
-            summary = row.get("order_run_summary") or {}
+            summary = row.get("bara_summary") or row.get("order_run_summary") or {}
             trace = summary.get("trace") or []
             if summary.get("solved_rank") is not None:
                 first = 1.0 if int(summary["solved_rank"]) == 1 else 0.0
@@ -230,29 +230,29 @@ def glob_one(root: Path, pattern: str) -> Path:
     return paths[0]
 
 
-def order_runs(repo_root: Path, bucket: str, model: str, budget: int, dataset: str) -> list[RunArrays]:
+def bara_runs(repo_root: Path, bucket: str, model: str, budget: int, dataset: str) -> list[RunArrays]:
     main_root = repo_root / "results" / "main" / bucket / model
     shuffle_root = repo_root / "results" / "seeds" / bucket / model
-    paths = sorted(main_root.glob(f"{model}_order_budget-{budget}.jsonl"))
-    paths += sorted(shuffle_root.glob(f"{model}_taskseed*_order_budget-{budget}.jsonl"))
+    paths = sorted(main_root.glob(f"{model}_bara_budget-{budget}.jsonl"))
+    paths += sorted(shuffle_root.glob(f"{model}_bara_seed*_budget-{budget}.jsonl"))
     if len(paths) != 11:
-        raise AssertionError(f"{model} {bucket} {budget}: expected 11 order runs, found {len(paths)}")
+        raise AssertionError(f"{model} {bucket} {budget}: expected 11 BARA runs, found {len(paths)}")
     return [load_run(path) for path in paths]
 
 
-def fixed_runs(repo_root: Path, model: str, budget: int, dataset: str) -> list[RunArrays]:
+def static_runs(repo_root: Path, model: str, budget: int, dataset: str) -> list[RunArrays]:
     main_root = repo_root / "results" / "main" / "pass_only" / model
     shuffle_root = repo_root / "results" / "seeds" / "pass_only" / model
-    paths = sorted(main_root.glob(f"{model}_fix_order*_budget-{budget}.jsonl"))
-    paths += sorted(shuffle_root.glob(f"{model}_fix_order*_budget-{budget}.jsonl"))
+    paths = sorted(main_root.glob(f"{model}_static_order*_budget-{budget}.jsonl"))
+    paths += sorted(shuffle_root.glob(f"{model}_static_order*_budget-{budget}.jsonl"))
     return [load_run(path) for path in paths]
 
 
-def random_runs(repo_root: Path, model: str, budget: int, dataset: str) -> list[RunArrays]:
+def uniform_runs(repo_root: Path, model: str, budget: int, dataset: str) -> list[RunArrays]:
     main_root = repo_root / "results" / "main" / "pass_only" / model
     shuffle_root = repo_root / "results" / "seeds" / "pass_only" / model
-    paths = sorted(main_root.glob(f"{model}_random_budget-{budget}.jsonl"))
-    paths += sorted(shuffle_root.glob(f"{model}_random_seed*_random_budget-{budget}.jsonl"))
+    paths = sorted(main_root.glob(f"{model}_uniform_budget-{budget}.jsonl"))
+    paths += sorted(shuffle_root.glob(f"{model}_uniform_seed*_budget-{budget}.jsonl"))
     return [load_run(path) for path in paths]
 
 
@@ -385,18 +385,18 @@ def ensure_same_task_ids(label: str, *choices: SeriesChoice) -> None:
             raise AssertionError(f"task ids do not align for {label}: {choices[0].name} vs {choice.name}")
 
 
-def bootstrap_diff(adaptive: np.ndarray, baseline: np.ndarray, *, rng: np.random.Generator, samples: int, direction: str) -> tuple[float, float, float, float]:
-    adaptive = np.asarray(adaptive, dtype=np.float64)
+def bootstrap_diff(bara: np.ndarray, baseline: np.ndarray, *, rng: np.random.Generator, samples: int, direction: str) -> tuple[float, float, float, float]:
+    bara = np.asarray(bara, dtype=np.float64)
     baseline = np.asarray(baseline, dtype=np.float64)
-    if adaptive.ndim not in (1, 2) or baseline.ndim not in (1, 2):
-        raise AssertionError(f"expected 1D or 2D series, got {adaptive.shape} vs {baseline.shape}")
-    if adaptive.shape[0] != baseline.shape[0]:
-        raise AssertionError(f"task dimension mismatch: {adaptive.shape} vs {baseline.shape}")
-    if adaptive.ndim == 2 and baseline.ndim == 2 and adaptive.shape[1] != baseline.shape[1]:
-        raise AssertionError(f"run dimension mismatch for paired run bootstrap: {adaptive.shape} vs {baseline.shape}")
+    if bara.ndim not in (1, 2) or baseline.ndim not in (1, 2):
+        raise AssertionError(f"expected 1D or 2D series, got {bara.shape} vs {baseline.shape}")
+    if bara.shape[0] != baseline.shape[0]:
+        raise AssertionError(f"task dimension mismatch: {bara.shape} vs {baseline.shape}")
+    if bara.ndim == 2 and baseline.ndim == 2 and bara.shape[1] != baseline.shape[1]:
+        raise AssertionError(f"run dimension mismatch for paired run bootstrap: {bara.shape} vs {baseline.shape}")
 
-    n = adaptive.shape[0]
-    run_count = adaptive.shape[1] if adaptive.ndim == 2 else (baseline.shape[1] if baseline.ndim == 2 else 0)
+    n = bara.shape[0]
+    run_count = bara.shape[1] if bara.ndim == 2 else (baseline.shape[1] if baseline.ndim == 2 else 0)
     if run_count:
         diffs = np.empty(samples, dtype=np.float64)
         chunk_size = 256
@@ -405,33 +405,33 @@ def bootstrap_diff(adaptive: np.ndarray, baseline: np.ndarray, *, rng: np.random
             size = stop - start
             task_idx = rng.integers(0, n, size=(size, n), dtype=np.int32)
             run_idx = rng.integers(0, run_count, size=(size, run_count), dtype=np.int32)
-            if adaptive.ndim == 2:
-                adaptive_sample = adaptive[task_idx[:, :, None], run_idx[:, None, :]].mean(axis=(1, 2))
+            if bara.ndim == 2:
+                bara_sample = bara[task_idx[:, :, None], run_idx[:, None, :]].mean(axis=(1, 2))
             else:
-                adaptive_sample = adaptive[task_idx].mean(axis=1)
+                bara_sample = bara[task_idx].mean(axis=1)
             if baseline.ndim == 2:
                 baseline_sample = baseline[task_idx[:, :, None], run_idx[:, None, :]].mean(axis=(1, 2))
             else:
                 baseline_sample = baseline[task_idx].mean(axis=1)
             if direction == "higher":
-                diffs[start:stop] = adaptive_sample - baseline_sample
+                diffs[start:stop] = bara_sample - baseline_sample
             elif direction == "lower":
-                diffs[start:stop] = baseline_sample - adaptive_sample
+                diffs[start:stop] = baseline_sample - bara_sample
             else:
                 raise ValueError(direction)
     else:
         idx = rng.integers(0, n, size=(samples, n), dtype=np.int32)
         if direction == "higher":
-            diffs = adaptive[idx].mean(axis=1) - baseline[idx].mean(axis=1)
+            diffs = bara[idx].mean(axis=1) - baseline[idx].mean(axis=1)
         elif direction == "lower":
-            diffs = baseline[idx].mean(axis=1) - adaptive[idx].mean(axis=1)
+            diffs = baseline[idx].mean(axis=1) - bara[idx].mean(axis=1)
         else:
             raise ValueError(direction)
 
     if direction == "higher":
-        point = float(np.mean(adaptive) - np.mean(baseline))
+        point = float(np.mean(bara) - np.mean(baseline))
     elif direction == "lower":
-        point = float(np.mean(baseline) - np.mean(adaptive))
+        point = float(np.mean(baseline) - np.mean(bara))
     else:
         raise ValueError(direction)
     low, high = np.percentile(diffs, [2.5, 97.5])
@@ -439,9 +439,9 @@ def bootstrap_diff(adaptive: np.ndarray, baseline: np.ndarray, *, rng: np.random
     return point, float(low), float(high), p_value
 
 
-def bootstrap_row(*, table: str, model: str, budget: int, metric: str, adaptive_label: str, adaptive: SeriesChoice, baseline_label: str, baseline: SeriesChoice, direction: str, rng: np.random.Generator, samples: int) -> dict[str, object]:
-    ensure_same_task_ids(f"{table} {model} {budget} {metric}", adaptive, baseline)
-    diff, low, high, p_value = bootstrap_diff(adaptive.series, baseline.series, rng=rng, samples=samples, direction=direction)
+def bootstrap_row(*, table: str, model: str, budget: int, metric: str, bara_label: str, bara: SeriesChoice, baseline_label: str, baseline: SeriesChoice, direction: str, rng: np.random.Generator, samples: int) -> dict[str, object]:
+    ensure_same_task_ids(f"{table} {model} {budget} {metric}", bara, baseline)
+    diff, low, high, p_value = bootstrap_diff(bara.series, baseline.series, rng=rng, samples=samples, direction=direction)
     significant = bool(low > 0.0 and diff > 0.0)
     if significant:
         result = "win"
@@ -455,11 +455,11 @@ def bootstrap_row(*, table: str, model: str, budget: int, metric: str, adaptive_
         "budget": budget,
         "metric": metric,
         "direction": direction,
-        "adaptive_label": adaptive_label,
-        "adaptive_table_pt": adaptive.table_pt,
-        "adaptive_actual_pt": adaptive.actual_pt,
-        "adaptive_source": adaptive.name,
-        "adaptive_files": ";".join(adaptive.files),
+        "bara_label": bara_label,
+        "bara_table_pt": bara.table_pt,
+        "bara_actual_pt": bara.actual_pt,
+        "bara_source": bara.name,
+        "bara_files": ";".join(bara.files),
         "baseline_label": baseline_label,
         "baseline_table_pt": baseline.table_pt,
         "baseline_actual_pt": baseline.actual_pt,
@@ -471,8 +471,8 @@ def bootstrap_row(*, table: str, model: str, budget: int, metric: str, adaptive_
         "p_value": p_value,
         "significant": significant,
         "result": result,
-        "n_tasks": len(adaptive.task_ids),
-        "adaptive_runs": adaptive.series.shape[1] if adaptive.series.ndim == 2 else 1,
+        "n_tasks": len(bara.task_ids),
+        "bara_runs": bara.series.shape[1] if bara.series.ndim == 2 else 1,
         "baseline_runs": baseline.series.shape[1] if baseline.series.ndim == 2 else 1,
     }
 
@@ -489,15 +489,15 @@ def build_rq1_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[d
     for model in args.models:
         for budget in args.budget:
             idx = budget_index(budget)
-            adaptive = choice_from_runs(
-                "stratified_11_order_runs",
-                order_runs(args.repo_root, "pass_only", model, budget, args.dataset_name),
+            bara = choice_from_runs(
+                "stratified_11_bara_runs",
+                bara_runs(args.repo_root, "pass_only", model, budget, args.dataset_name),
                 "solve",
-                RQ2_TABLE[model]["Task-adaptive"]["solve"][idx],
+                RQ2_TABLE[model]["BARA"]["solve"][idx],
             )
             baselines = [single_arm_choice(args.repo_root, model, arm, budget, args.dataset_name) for arm in ARMS]
             baseline = max(baselines, key=lambda choice: choice.actual_pt)
-            rows.append(bootstrap_row(table="rq1", model=model, budget=budget, metric="solve", adaptive_label="Task-Adaptive Order", adaptive=adaptive, baseline_label=baseline.name, baseline=baseline, direction="higher", rng=rng, samples=args.bootstrap_samples))
+            rows.append(bootstrap_row(table="rq1", model=model, budget=budget, metric="solve", bara_label="BARA", bara=bara, baseline_label=baseline.name, baseline=baseline, direction="higher", rng=rng, samples=args.bootstrap_samples))
     return rows
 
 
@@ -506,35 +506,35 @@ def build_rq2_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[d
     for model in args.models:
         for budget in args.budget:
             idx = budget_index(budget)
-            order = order_runs(args.repo_root, "pass_only", model, budget, args.dataset_name)
-            fixed = fixed_runs(args.repo_root, model, budget, args.dataset_name)
-            random = random_runs(args.repo_root, model, budget, args.dataset_name)
-            adaptive = {
-                "solve": choice_from_runs("stratified_11_order_runs", order, "solve", RQ2_TABLE[model]["Task-adaptive"]["solve"][idx]),
-                "firsthit": choice_from_runs("stratified_11_order_runs", order, "firsthit", RQ2_TABLE[model]["Task-adaptive"]["firsthit"][idx]),
+            bara_run_set = bara_runs(args.repo_root, "pass_only", model, budget, args.dataset_name)
+            static_run_set = static_runs(args.repo_root, model, budget, args.dataset_name)
+            uniform_run_set = uniform_runs(args.repo_root, model, budget, args.dataset_name)
+            bara = {
+                "solve": choice_from_runs("stratified_11_bara_runs", bara_run_set, "solve", RQ2_TABLE[model]["BARA"]["solve"][idx]),
+                "firsthit": choice_from_runs("stratified_11_bara_runs", bara_run_set, "firsthit", RQ2_TABLE[model]["BARA"]["firsthit"][idx]),
             }
-            fixed_run = select_run_matching_table(f"RQ2 {model} {budget} fixed", fixed, solve_target=RQ2_TABLE[model]["Fixed"]["solve"][idx], aux_target=RQ2_TABLE[model]["Fixed"]["firsthit"][idx], aux_metric="firsthit")
-            random_run = select_run_matching_table(f"RQ2 {model} {budget} random", random, solve_target=RQ2_TABLE[model]["Random"]["solve"][idx], aux_target=RQ2_TABLE[model]["Random"]["firsthit"][idx], aux_metric="firsthit")
+            static_run = select_run_matching_table(f"RQ2 {model} {budget} static", static_run_set, solve_target=RQ2_TABLE[model]["Static"]["solve"][idx], aux_target=RQ2_TABLE[model]["Static"]["firsthit"][idx], aux_metric="firsthit")
+            uniform_run = select_run_matching_table(f"RQ2 {model} {budget} uniform", uniform_run_set, solve_target=RQ2_TABLE[model]["Uniform"]["solve"][idx], aux_target=RQ2_TABLE[model]["Uniform"]["firsthit"][idx], aux_metric="firsthit")
             baselines = {
-                "Fixed": {
-                    "solve": choice_from_run(fixed_run, "solve", RQ2_TABLE[model]["Fixed"]["solve"][idx]),
-                    "firsthit": choice_from_run(fixed_run, "firsthit", RQ2_TABLE[model]["Fixed"]["firsthit"][idx]),
+                "Static": {
+                    "solve": choice_from_run(static_run, "solve", RQ2_TABLE[model]["Static"]["solve"][idx]),
+                    "firsthit": choice_from_run(static_run, "firsthit", RQ2_TABLE[model]["Static"]["firsthit"][idx]),
                 },
-                "Random": {
-                    "solve": choice_from_run(random_run, "solve", RQ2_TABLE[model]["Random"]["solve"][idx]),
-                    "firsthit": choice_from_run(random_run, "firsthit", RQ2_TABLE[model]["Random"]["firsthit"][idx]),
+                "Uniform": {
+                    "solve": choice_from_run(uniform_run, "solve", RQ2_TABLE[model]["Uniform"]["solve"][idx]),
+                    "firsthit": choice_from_run(uniform_run, "firsthit", RQ2_TABLE[model]["Uniform"]["firsthit"][idx]),
                 },
             }
             for metric in ("solve", "firsthit"):
                 baseline_label = max(baselines, key=lambda name: baselines[name][metric].table_pt)
-                rows.append(bootstrap_row(table="rq2", model=model, budget=budget, metric=metric, adaptive_label="Task-adaptive", adaptive=adaptive[metric], baseline_label=baseline_label, baseline=baselines[baseline_label][metric], direction="higher", rng=rng, samples=args.bootstrap_samples))
+                rows.append(bootstrap_row(table="rq2", model=model, budget=budget, metric=metric, bara_label="BARA", bara=bara[metric], baseline_label=baseline_label, baseline=baselines[baseline_label][metric], direction="higher", rng=rng, samples=args.bootstrap_samples))
     return rows
 
 
 def allocator_run(args: argparse.Namespace, model: str, budget: int, policy_label: str) -> RunArrays:
     policy = ALLOCATOR_FILE[policy_label]
     root = args.repo_root / "results" / "ablation" / "pass_only" / model
-    path = glob_one(root, f"{model}_allocator-{policy}_order_budget-{budget}.jsonl")
+    path = glob_one(root, f"{model}_allocator-{policy}_bara_budget-{budget}.jsonl")
     return load_run(path)
 
 
@@ -543,10 +543,10 @@ def build_rq3_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[d
     for model in args.models:
         for budget in args.budget:
             idx = budget_index(budget)
-            adaptive_runs = order_runs(args.repo_root, "pass_only", model, budget, args.dataset_name)
-            adaptive = {
-                "solve": choice_from_runs("stratified_11_order_runs", adaptive_runs, "solve", RQ3_TABLE[model]["Adaptive budget"]["solve"][idx]),
-                "capped": choice_from_runs("stratified_11_order_runs", adaptive_runs, "capped", RQ3_TABLE[model]["Adaptive budget"]["capped"][idx]),
+            bara_run_set = bara_runs(args.repo_root, "pass_only", model, budget, args.dataset_name)
+            bara = {
+                "solve": choice_from_runs("stratified_11_bara_runs", bara_run_set, "solve", RQ3_TABLE[model]["BARA budget"]["solve"][idx]),
+                "capped": choice_from_runs("stratified_11_bara_runs", bara_run_set, "capped", RQ3_TABLE[model]["BARA budget"]["capped"][idx]),
             }
             baseline_choices = {}
             for label in ("Static prior split", "Equal split", "Empirical quantile"):
@@ -557,8 +557,8 @@ def build_rq3_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[d
                 }
             solve_label = max(baseline_choices, key=lambda label: baseline_choices[label]["solve"].table_pt)
             capped_label = min(baseline_choices, key=lambda label: baseline_choices[label]["capped"].table_pt)
-            rows.append(bootstrap_row(table="rq3", model=model, budget=budget, metric="solve", adaptive_label="Adaptive budget", adaptive=adaptive["solve"], baseline_label=solve_label, baseline=baseline_choices[solve_label]["solve"], direction="higher", rng=rng, samples=args.bootstrap_samples))
-            rows.append(bootstrap_row(table="rq3", model=model, budget=budget, metric="capped", adaptive_label="Adaptive budget", adaptive=adaptive["capped"], baseline_label=capped_label, baseline=baseline_choices[capped_label]["capped"], direction="lower", rng=rng, samples=args.bootstrap_samples))
+            rows.append(bootstrap_row(table="rq3", model=model, budget=budget, metric="solve", bara_label="BARA budget", bara=bara["solve"], baseline_label=solve_label, baseline=baseline_choices[solve_label]["solve"], direction="higher", rng=rng, samples=args.bootstrap_samples))
+            rows.append(bootstrap_row(table="rq3", model=model, budget=budget, metric="capped", bara_label="BARA budget", bara=bara["capped"], baseline_label=capped_label, baseline=baseline_choices[capped_label]["capped"], direction="lower", rng=rng, samples=args.bootstrap_samples))
     return rows
 
 
@@ -567,12 +567,12 @@ def build_rq4_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[d
     for model in args.models:
         for budget in args.budget:
             idx = budget_index(budget)
-            po_order = order_runs(args.repo_root, "pass_only", model, budget, args.dataset_name)
-            ta_order = order_runs(args.repo_root, "token_aware", model, budget, args.dataset_name)
+            po_bara_runs = bara_runs(args.repo_root, "pass_only", model, budget, args.dataset_name)
+            ta_bara_runs = bara_runs(args.repo_root, "token_aware", model, budget, args.dataset_name)
             for metric in ("solve", "firsthit", "cost"):
-                po = choice_from_runs("stratified_11_po_order_runs", po_order, metric, RQ4_TABLE[model]["PO"][metric][idx])
-                ta = choice_from_runs("stratified_11_ta_order_runs", ta_order, metric, RQ4_TABLE[model]["TA"][metric][idx])
-                rows.append(bootstrap_row(table="rq4", model=model, budget=budget, metric=metric, adaptive_label="TA", adaptive=ta, baseline_label="PO", baseline=po, direction="lower" if metric == "cost" else "higher", rng=rng, samples=args.bootstrap_samples))
+                po = choice_from_runs("stratified_11_po_bara_runs", po_bara_runs, metric, RQ4_TABLE[model]["PO"][metric][idx])
+                ta = choice_from_runs("stratified_11_ta_bara_runs", ta_bara_runs, metric, RQ4_TABLE[model]["TA"][metric][idx])
+                rows.append(bootstrap_row(table="rq4", model=model, budget=budget, metric=metric, bara_label="TA", bara=ta, baseline_label="PO", baseline=po, direction="lower" if metric == "cost" else "higher", rng=rng, samples=args.bootstrap_samples))
     return rows
 
 
@@ -587,8 +587,8 @@ def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
 
 def write_summary(path: Path, rows: list[dict[str, object]]) -> None:
     lines = [
-        "All tests use paired bootstrap over aligned tasks; multi-run order methods additionally resample task-order runs.",
-        "For direction=higher, diff=adaptive-baseline. For direction=lower, diff=baseline-adaptive.",
+        "All tests use paired bootstrap over aligned tasks; multi-run BARA methods additionally resample task-order runs.",
+        "For direction=higher, diff=bara-baseline. For direction=lower, diff=baseline-bara.",
         "",
     ]
     for row in rows:
@@ -596,7 +596,7 @@ def write_summary(path: Path, rows: list[dict[str, object]]) -> None:
         scale = 1.0 if row["metric"] == "cost" else 100.0
         lines.append(
             f"{row['table']} {row['model']} {int(row['budget'])//1000}k {row['metric']}: "
-            f"{row['adaptive_label']} table={float(row['adaptive_table_pt']):.3f}{unit} actual={float(row['adaptive_actual_pt']):.3f}{unit} source={row['adaptive_source']} | "
+            f"{row['bara_label']} table={float(row['bara_table_pt']):.3f}{unit} actual={float(row['bara_actual_pt']):.3f}{unit} source={row['bara_source']} | "
             f"{row['baseline_label']} table={float(row['baseline_table_pt']):.3f}{unit} actual={float(row['baseline_actual_pt']):.3f}{unit} source={row['baseline_source']} | "
             f"diff={float(row['diff'])*scale:.3f}{unit} CI=[{float(row['ci_low'])*scale:.3f},{float(row['ci_high'])*scale:.3f}] {row['result']}"
         )

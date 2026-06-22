@@ -22,14 +22,14 @@ def _load_compare_module():
 
 
 class CompareExperimentResultsTests(unittest.TestCase):
-    def test_load_model_stats_includes_adaptive_records(self) -> None:
+    def test_load_model_stats_includes_bara_records(self) -> None:
         module = _load_compare_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             model_dir = Path(tmpdir) / "toy-model"
             model_dir.mkdir(parents=True)
             reward_path = model_dir / "toy-model.reward_table.jsonl"
-            adaptive_path = model_dir / "toy-model_adaptive_A0-A1-A2.jsonl"
+            bara_path = model_dir / "toy-model_bara_A0-A1-A2.jsonl"
 
             reward_rows = [
                 {"task_id": "t1", "arm_id": "CD", "pass_at_k": 1.0, "completion_tokens": 10},
@@ -39,7 +39,7 @@ class CompareExperimentResultsTests(unittest.TestCase):
                 {"task_id": "t2", "arm_id": "CF", "pass_at_k": 1.0, "completion_tokens": 21},
                 {"task_id": "t2", "arm_id": "PH", "pass_at_k": 0.0, "completion_tokens": 31},
             ]
-            adaptive_rows = [
+            bara_rows = [
                 {"task_id": "t1", "arm_id": "CD", "pass_at_k": 1.0, "completion_tokens": 10},
                 {"task_id": "t2", "arm_id": "CF", "pass_at_k": 1.0, "completion_tokens": 21},
             ]
@@ -48,26 +48,26 @@ class CompareExperimentResultsTests(unittest.TestCase):
                 "".join(json.dumps(row) + "\n" for row in reward_rows),
                 encoding="utf-8",
             )
-            adaptive_path.write_text(
-                "".join(json.dumps(row) + "\n" for row in adaptive_rows),
+            bara_path.write_text(
+                "".join(json.dumps(row) + "\n" for row in bara_rows),
                 encoding="utf-8",
             )
 
             stats = module.load_model_stats(reward_path, "bigcodebench-v0.1.4")
 
-        self.assertIsNotNone(stats.adaptive_stats)
-        self.assertEqual(2, stats.adaptive_stats.num_tasks)
-        self.assertEqual(2, stats.adaptive_stats.passed_count)
-        self.assertEqual({"CD": 1, "CF": 1}, stats.adaptive_stats.arm_pull_counts)
+        self.assertIsNotNone(stats.bara_stats)
+        self.assertEqual(2, stats.bara_stats.num_tasks)
+        self.assertEqual(2, stats.bara_stats.passed_count)
+        self.assertEqual({"CD": 1, "CF": 1}, stats.bara_stats.arm_pull_counts)
 
-    def test_print_model_summary_renders_adaptive_section(self) -> None:
+    def test_print_model_summary_renders_bara_section(self) -> None:
         module = _load_compare_module()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             model_dir = Path(tmpdir) / "toy-model"
             model_dir.mkdir(parents=True)
             reward_path = model_dir / "toy-model.reward_table.jsonl"
-            adaptive_path = model_dir / "toy-model_adaptive_A0-A1-A2.jsonl"
+            bara_path = model_dir / "toy-model_bara_A0-A1-A2.jsonl"
 
             reward_path.write_text(
                 "".join(
@@ -81,7 +81,7 @@ class CompareExperimentResultsTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            adaptive_path.write_text(
+            bara_path.write_text(
                 "".join(
                     json.dumps(row) + "\n"
                     for row in [
@@ -99,9 +99,9 @@ class CompareExperimentResultsTests(unittest.TestCase):
             module.print_model_summary(stats, "union_desc")
 
         rendered = output.getvalue()
-        self.assertIn("[Adaptive]", rendered)
-        self.assertIn("adaptive", rendered)
-        self.assertIn("adaptive_vs_best_single", rendered)
+        self.assertIn("[BARA]", rendered)
+        self.assertIn("bara", rendered)
+        self.assertIn("bara_vs_best_single", rendered)
 
 
 if __name__ == "__main__":

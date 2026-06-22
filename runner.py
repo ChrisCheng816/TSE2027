@@ -7,8 +7,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from .arms import DEFAULT_PIPELINE_ARMS, PipelineArm, build_prompt_bundle
-from .adaptive import selector_apply_update
-from .config import AdaptiveConfig, RewardConfig, adaptive_per_task_completion_token_budget
+from .bara import selector_apply_update
+from .config import BARAConfig, RewardConfig, bara_per_task_completion_token_budget
 from .evaluator import estimate_pass_at_k, evaluate_completion, evaluate_self_test_completion
 from .features import BigCodeBenchFeatureExtractor
 from .models import ModelClient
@@ -50,7 +50,7 @@ class ExperimentRunner:
     selector: Any
     generation_config: GenerationConfig = field(default_factory=GenerationConfig)
     reward_config: RewardConfig = field(default_factory=RewardConfig)
-    adaptive_config: AdaptiveConfig = field(default_factory=AdaptiveConfig)
+    bara_config: BARAConfig = field(default_factory=BARAConfig)
     feature_extractor: BigCodeBenchFeatureExtractor | None = field(default_factory=BigCodeBenchFeatureExtractor)
     budget_allocator: Any | None = None
     compute_features_and_reward: bool = True
@@ -163,7 +163,7 @@ class ExperimentRunner:
                 on_arm_complete(arm, arm_records[arm.arm_id])
         return arm_records
 
-    def run_adaptive(
+    def run_bara(
         self,
         tasks: list[CodeGenTask],
         *,
@@ -177,18 +177,18 @@ class ExperimentRunner:
         self._validate_sampling_request(num_samples_per_task=num_samples_per_task, pass_k=pass_k)
         arm_map = {arm.arm_id: arm for arm in self.arms}
         if not arm_map:
-            raise ValueError("Adaptive runs require at least one arm.")
+            raise ValueError("BARA runs require at least one arm.")
         a0_arm = arm_map.get("A0") or next(iter(arm_map.values()))
         a2_arm = arm_map.get("A2")
         records: list[GenerationRecord] = []
         spent_token_budget = int(initial_spent_completion_tokens)
-        total_budget = getattr(self.adaptive_config, "total_completion_token_budget", None)
+        total_budget = getattr(self.bara_config, "total_completion_token_budget", None)
         total_tasks = initial_completed_tasks + len(tasks)
         batch_records: list[GenerationRecord] = []
         resolved_batch_size = max(self.batch_size, 1)
         if self.feature_extractor is None:
-            raise RuntimeError("Adaptive runs require a feature extractor.")
-        random_ranker = random.Random(int(getattr(self.adaptive_config, "order_run_random_seed", 0) or 0))
+            raise RuntimeError("BARA runs require a feature extractor.")
+        uniform_ranker = random.Random(int(getattr(self.bara_config, "task_order_seed", 0) or 0))
 
         for relative_task_index, task in enumerate(tasks, 1):
             task_index = initial_completed_tasks + relative_task_index
@@ -201,8 +201,8 @@ class ExperimentRunner:
             )
             decision = self.selector.select(task_features.values)
             spent_before_task = spent_token_budget
-            if getattr(self.adaptive_config, "order_run", False):
-                steps, selected_arm, order_run_trace, task_level_budget = self._run_ordered_adaptive_task(
+            if getattr(self.bara_config, "rank_and_allocate", False):
+                steps, selected_arm, bara_trace, task_level_budget = self._run_bara_task(
                     task=task,
                     task_features=task_features,
                     decision=decision,
@@ -211,7 +211,7 @@ class ExperimentRunner:
                     pass_k=pass_k,
                     remaining_completion_budget=remaining_budget,
                     task_index=task_index,
-                    random_ranker=random_ranker,
+                    uniform_ranker=uniform_ranker,
                 )
             else:
                 selected_arm = arm_map.get(decision.arm_id, a0_arm)
@@ -235,13 +235,13 @@ class ExperimentRunner:
                         max_new_tokens_cap=remaining_budget,
                     )[0]
                 task_level_budget = None
-                order_run_trace = []
+                bara_trace = []
             spent_token_budget += (
                 sum(
                     int(item.get("charged_token_usage") or item.get("actual_knn_total_tokens") or 0)
-                    for item in order_run_trace
+                    for item in bara_trace
                 )
-                if order_run_trace
+                if bara_trace
                 else self._steps_total_token_cost(steps)
             )
 
@@ -254,18 +254,18 @@ class ExperimentRunner:
                 "remaining_completion_budget_before_decision": remaining_budget,
                 "remaining_token_budget_before_decision": remaining_budget,
             }
-            if order_run_trace:
+            if bara_trace:
                 selection_reason.update(
                     {
-                        "order_run": True,
-                        "order_run_task_completion_token_budget": task_level_budget,
-                        "order_run_execution_trace": order_run_trace,
-                        "order_run_random_run": bool(getattr(self.adaptive_config, "random_run", False)),
-                        "order_run_fix_run": bool(getattr(self.adaptive_config, "fix_run", False)),
-                        "order_run_fix_budget": bool(getattr(self.adaptive_config, "fix_budget", False)),
-                        "order_run_free_run": bool(getattr(self.adaptive_config, "free_run", False)),
-                        "order_run_random_seed": int(getattr(self.adaptive_config, "order_run_random_seed", 0) or 0),
-                        "order_run_fix_start": str(getattr(self.adaptive_config, "order_run_fix_start", "A0") or "A0"),
+                        "bara": True,
+                        "bara_task_completion_token_budget": task_level_budget,
+                        "bara_execution_trace": bara_trace,
+                        "bara_uniform_run": bool(getattr(self.bara_config, "uniform_run", False)),
+                        "bara_static_run": bool(getattr(self.bara_config, "static_run", False)),
+                        "bara_static_budget": bool(getattr(self.bara_config, "static_budget", False)),
+                        "bara_free_run": bool(getattr(self.bara_config, "free_run", False)),
+                        "task_order_seed": getattr(self.bara_config, "task_order_seed", None),
+                        "static_order": str(getattr(self.bara_config, "static_order", "A0-A1-A2") or "A0-A1-A2"),
                     }
                 )
             feature_result = task_features
@@ -283,23 +283,23 @@ class ExperimentRunner:
                     "pipeline_stage": selected_arm.stage,
                     "reward_formula": _reward_formula_description(self.reward_config),
                     "reward_weights": _reward_weight_dict(self.reward_config),
-                    "adaptive_total_completion_token_budget": total_budget,
+                    "bara_total_completion_token_budget": total_budget,
                     "spent_completion_tokens_after_task": spent_token_budget,
                     "spent_token_budget_after_task": spent_token_budget,
-                    "adaptive_selected_arm": selected_arm.arm_id,
-                    "adaptive_order_run": bool(order_run_trace),
-                    "adaptive_attempted_arms": [item["arm_id"] for item in order_run_trace] or [selected_arm.arm_id],
-                    "adaptive_random_run": bool(getattr(self.adaptive_config, "random_run", False)),
-                    "adaptive_fix_run": bool(getattr(self.adaptive_config, "fix_run", False)),
-                    "adaptive_fix_budget": bool(getattr(self.adaptive_config, "fix_budget", False)),
-                    "adaptive_free_run": bool(getattr(self.adaptive_config, "free_run", False)),
-                    "adaptive_random_seed": int(getattr(self.adaptive_config, "order_run_random_seed", 0) or 0),
-                    "adaptive_fix_start": str(getattr(self.adaptive_config, "order_run_fix_start", "A0") or "A0"),
+                    "bara_selected_arm": selected_arm.arm_id,
+                    "bara_rank_and_allocate": bool(bara_trace),
+                    "bara_attempted_arms": [item["arm_id"] for item in bara_trace] or [selected_arm.arm_id],
+                    "bara_uniform_run": bool(getattr(self.bara_config, "uniform_run", False)),
+                    "bara_static_run": bool(getattr(self.bara_config, "static_run", False)),
+                    "bara_static_budget": bool(getattr(self.bara_config, "static_budget", False)),
+                    "bara_free_run": bool(getattr(self.bara_config, "free_run", False)),
+                    "bara_task_order_seed": getattr(self.bara_config, "task_order_seed", None),
+                    "bara_static_order": str(getattr(self.bara_config, "static_order", "A0-A1-A2") or "A0-A1-A2"),
                 },
                 completion_token_budget_override=task_level_budget,
             )
-            if not order_run_trace:
-                feedback = _selector_feedback(record, metric=self.adaptive_config.selector_feedback_metric)
+            if not bara_trace:
+                feedback = _selector_feedback(record, metric=self.bara_config.selector_feedback_metric)
                 selector_apply_update(
                     self.selector,
                     arm_id=selected_arm.arm_id,
@@ -312,7 +312,7 @@ class ExperimentRunner:
                     },
                 )
             logging.info(
-                "adaptive task=%s/%s task_id=%s final_arm=%s pass@%s=%.4f reward=%.4f attempts=%s",
+                "BARA task=%s/%s task_id=%s final_arm=%s pass@%s=%.4f reward=%.4f attempts=%s",
                 task_index,
                 total_tasks,
                 task.task_id,
@@ -320,7 +320,7 @@ class ExperimentRunner:
                 pass_k,
                 float(record.pass_at_k or 0.0),
                 float(record.reward or 0.0),
-                ",".join(item["arm_id"] for item in order_run_trace) if order_run_trace else record.arm_id,
+                ",".join(item["arm_id"] for item in bara_trace) if bara_trace else record.arm_id,
             )
             records.append(record)
             batch_records.append(record)
@@ -347,8 +347,8 @@ class ExperimentRunner:
         return _task_completion_token_budget(
             reference_completion_tokens=reference_completion_tokens,
             budget_multiplier=self.reward_config.completion_budget_multiplier,
-            fixed_budget=adaptive_per_task_completion_token_budget(
-                self.adaptive_config,
+            fixed_budget=bara_per_task_completion_token_budget(
+                self.bara_config,
                 self.dataset_name,
             ),
         )
@@ -388,7 +388,7 @@ class ExperimentRunner:
             reward_config=self.reward_config,
         )
 
-    def _run_ordered_adaptive_task(
+    def _run_bara_task(
         self,
         *,
         task: CodeGenTask,
@@ -399,10 +399,10 @@ class ExperimentRunner:
         pass_k: int,
         remaining_completion_budget: int | None,
         task_index: int,
-        random_ranker: random.Random,
+        uniform_ranker: random.Random,
     ) -> tuple[list[AttemptStep], PipelineArm, list[dict[str, Any]], int]:
         if self.budget_allocator is None:
-            raise RuntimeError("order_run requires a budget allocator.")
+            raise RuntimeError("BARA requires a budget allocator.")
         available_arm_ids = list(arm_map)
         ranked_arms = _decision_ranked_arms(decision, available_arm_ids=available_arm_ids)
         if not ranked_arms:
@@ -410,13 +410,13 @@ class ExperimentRunner:
         for arm_id in available_arm_ids:
             if arm_id not in ranked_arms:
                 ranked_arms.append(arm_id)
-        if getattr(self.adaptive_config, "random_run", False):
+        if getattr(self.bara_config, "uniform_run", False):
             ranked_arms = list(available_arm_ids)
-            random_ranker.shuffle(ranked_arms)
-        if getattr(self.adaptive_config, "fix_run", False):
-            ranked_arms = _fix_start_arm_order(
+            uniform_ranker.shuffle(ranked_arms)
+        if getattr(self.bara_config, "static_run", False):
+            ranked_arms = _static_arm_order(
                 tuple(available_arm_ids),
-                str(getattr(self.adaptive_config, "order_run_fix_start", "A0") or "A0"),
+                str(getattr(self.bara_config, "static_order", "A0-A1-A2") or "A0-A1-A2"),
             )
             if ranked_arms:
                 rotation_offset = (int(task_index) - 1) % len(ranked_arms)
@@ -435,20 +435,20 @@ class ExperimentRunner:
             if remaining_budget <= 0:
                 break
             arm = arm_map[arm_id]
-            if getattr(self.adaptive_config, "free_run", False):
+            if getattr(self.bara_config, "free_run", False):
                 allocation = {
                     "arm_id": arm_id,
                     "remaining_budget_before_arm": int(remaining_budget),
                     "allocated_completion_token_cap": int(remaining_budget),
                     "allocation_mode": "free_remaining_budget",
                 }
-            elif getattr(self.adaptive_config, "fix_budget", False):
+            elif getattr(self.bara_config, "static_budget", False):
                 remaining_ranked_arms = list(ranked_arms[arm_index - 1 :])
                 prior_weights = dict(
-                    getattr(self.adaptive_config, "order_run_budget_prior_weights", None)
+                    getattr(self.bara_config, "budget_prior_weights", None)
                     or {candidate: 1.0 for candidate in available_arm_ids}
                 )
-                allocated_cap, fixed_arm_prior_weight, fixed_prior_denominator = _fixed_prior_budget_cap(
+                allocated_cap, fixed_arm_prior_weight, fixed_prior_denominator = _static_prior_budget_cap(
                     arm_id=arm_id,
                     remaining_ranked_arms=remaining_ranked_arms,
                     remaining_budget=remaining_budget,
@@ -489,7 +489,7 @@ class ExperimentRunner:
             over_allocated_cap = actual_total_tokens > allocated_cap
             charged_token_usage = int(allocated_cap) if over_allocated_cap else actual_total_tokens
             if over_allocated_cap:
-                arm_steps = _mark_order_run_steps_over_cap_failure(
+                arm_steps = _mark_bara_steps_over_cap_failure(
                     arm_steps,
                     allocated_cap=allocated_cap,
                     actual_total_tokens=actual_total_tokens,
@@ -500,24 +500,24 @@ class ExperimentRunner:
                     step,
                     details={
                         **dict(step.details),
-                        "order_run": True,
-                        "order_run_rank": arm_index,
-                        "order_run_allocated_completion_token_cap": allocated_cap,
-                        "order_run_actual_completion_tokens": actual_completion_tokens,
-                        "order_run_actual_accounted_completion_tokens": actual_accounted_completion_tokens,
-                        "order_run_actual_total_tokens": actual_total_tokens,
-                        "order_run_actual_knn_total_tokens": actual_knn_total_tokens,
-                        "order_run_charged_token_usage": charged_token_usage,
-                        "order_run_over_allocated_token_cap": over_allocated_cap,
-                        "order_run_remaining_budget_before_arm": remaining_budget,
-                        "order_run_remaining_budget_after_arm": max(remaining_budget - charged_token_usage, 0),
-                        "order_run_allocation": dict(allocation),
+                        "bara": True,
+                        "bara_rank": arm_index,
+                        "bara_allocated_completion_token_cap": allocated_cap,
+                        "bara_actual_completion_tokens": actual_completion_tokens,
+                        "bara_actual_accounted_completion_tokens": actual_accounted_completion_tokens,
+                        "bara_actual_total_tokens": actual_total_tokens,
+                        "bara_actual_knn_total_tokens": actual_knn_total_tokens,
+                        "bara_charged_token_usage": charged_token_usage,
+                        "bara_over_allocated_token_cap": over_allocated_cap,
+                        "bara_remaining_budget_before_arm": remaining_budget,
+                        "bara_remaining_budget_after_arm": max(remaining_budget - charged_token_usage, 0),
+                        "bara_allocation": dict(allocation),
                     },
                 )
                 for step in arm_steps
             ]
             combined_steps.extend(annotated_steps)
-            attempt_record = self._observe_adaptive_attempt(
+            attempt_record = self._observe_bara_attempt(
                 task=task,
                 task_features=task_features,
                 arm=arm,
@@ -526,8 +526,8 @@ class ExperimentRunner:
                 allocated_completion_token_cap=allocated_cap,
                 token_usage_for_budget=charged_token_usage,
                 observe_budget_allocator=not (
-                    bool(getattr(self.adaptive_config, "fix_budget", False))
-                    or bool(getattr(self.adaptive_config, "free_run", False))
+                    bool(getattr(self.bara_config, "static_budget", False))
+                    or bool(getattr(self.bara_config, "free_run", False))
                 ),
             )
             execution_trace.append(
@@ -566,20 +566,20 @@ class ExperimentRunner:
                         step,
                         details={
                             **dict(step.details),
-                            "order_run": True,
-                            "order_run_rank": 1,
-                            "order_run_allocated_completion_token_cap": fallback_cap,
-                            "order_run_actual_completion_tokens": sum(
+                            "bara": True,
+                            "bara_rank": 1,
+                            "bara_allocated_completion_token_cap": fallback_cap,
+                            "bara_actual_completion_tokens": sum(
                                 candidate_step.output.completion_tokens for candidate_step in fallback_steps
                             ),
-                            "order_run_actual_accounted_completion_tokens": sum(
+                            "bara_actual_accounted_completion_tokens": sum(
                                 self._step_accounted_completion_tokens(candidate_step)
                                 for candidate_step in fallback_steps
                             ),
-                            "order_run_actual_total_tokens": self._steps_total_token_cost(fallback_steps),
-                            "order_run_remaining_budget_before_arm": 0,
-                            "order_run_remaining_budget_after_arm": 0,
-                            "order_run_allocation": {
+                            "bara_actual_total_tokens": self._steps_total_token_cost(fallback_steps),
+                            "bara_remaining_budget_before_arm": 0,
+                            "bara_remaining_budget_after_arm": 0,
+                            "bara_allocation": {
                                 "arm_id": fallback_arm.arm_id,
                                 "allocated_completion_token_cap": fallback_cap,
                                 "allocation_mode": "fallback_min_cap",
@@ -589,7 +589,7 @@ class ExperimentRunner:
                     for step in fallback_steps
                 ]
             )
-            attempt_record = self._observe_adaptive_attempt(
+            attempt_record = self._observe_bara_attempt(
                 task=task,
                 task_features=task_features,
                 arm=fallback_arm,
@@ -646,7 +646,7 @@ class ExperimentRunner:
             max_new_tokens_cap=completion_token_cap,
         )[0]
 
-    def _observe_adaptive_attempt(
+    def _observe_bara_attempt(
         self,
         *,
         task: CodeGenTask,
@@ -672,11 +672,11 @@ class ExperimentRunner:
                 "pipeline_stage": arm.stage,
                 "reward_formula": _reward_formula_description(self.reward_config),
                 "reward_weights": _reward_weight_dict(self.reward_config),
-                "adaptive_order_run_attempt": True,
+                "bara_rank_and_allocate_attempt": True,
             },
             completion_token_budget_override=allocated_completion_token_cap,
         )
-        feedback = _selector_feedback(attempt_record, metric=self.adaptive_config.selector_feedback_metric)
+        feedback = _selector_feedback(attempt_record, metric=self.bara_config.selector_feedback_metric)
         selector_apply_update(
             self.selector,
             arm_id=arm.arm_id,
@@ -686,7 +686,7 @@ class ExperimentRunner:
             metadata={
                 "task_id": task.task_id,
                 "record": attempt_record.to_dict(),
-                "order_run": True,
+                "bara": True,
             },
         )
         if observe_budget_allocator and self.budget_allocator is not None:
@@ -702,7 +702,7 @@ class ExperimentRunner:
                 metadata={
                     "task_id": task.task_id,
                     "record": attempt_record.to_dict(),
-                    "order_run": True,
+                    "bara": True,
                 },
             )
         return attempt_record
@@ -1560,24 +1560,24 @@ def _self_test_summary(evaluation: dict[str, Any] | None) -> dict[str, Any]:
 
 
 
-def _is_explicit_fix_order(fix_start: str) -> bool:
-    return "-" in str(fix_start)
+def _is_explicit_static_order(static_order: str) -> bool:
+    return "-" in str(static_order)
 
 
-def _fix_start_arm_order(arm_ids: tuple[str, ...], fix_start: str) -> list[str]:
-    if _is_explicit_fix_order(fix_start):
-        ordered_arms = [part for part in str(fix_start).split("-") if part]
+def _static_arm_order(arm_ids: tuple[str, ...], static_order: str) -> list[str]:
+    if _is_explicit_static_order(static_order):
+        ordered_arms = [part for part in str(static_order).split("-") if part]
         if sorted(ordered_arms) != sorted(arm_ids):
-            raise ValueError(f"--fix-start order {fix_start} must be a permutation of arm_ids={arm_ids}.")
+            raise ValueError(f"--static-order {static_order} must be a permutation of arm_ids={arm_ids}.")
         return ordered_arms
-    if fix_start not in arm_ids:
-        raise ValueError(f"--fix-start {fix_start} is not in arm_ids={arm_ids}.")
+    if static_order not in arm_ids:
+        raise ValueError(f"--static-order {static_order} is not in arm_ids={arm_ids}.")
     base = list(arm_ids)
-    offset = base.index(fix_start)
+    offset = base.index(static_order)
     return base[offset:] + base[:offset]
 
 
-def _fixed_prior_budget_cap(
+def _static_prior_budget_cap(
     *,
     arm_id: str,
     remaining_ranked_arms: list[str],
@@ -1625,7 +1625,7 @@ def _draft_failure_evaluation(message: str) -> dict[str, Any]:
     }
 
 
-def _mark_order_run_steps_over_cap_failure(
+def _mark_bara_steps_over_cap_failure(
     steps: list[AttemptStep],
     *,
     allocated_cap: int,
@@ -1634,7 +1634,7 @@ def _mark_order_run_steps_over_cap_failure(
     if not steps:
         return steps
     message = (
-        "Order-run attempt exceeded allocated token cap: "
+        "BARA attempt exceeded allocated token cap: "
         f"actual_total_tokens={int(actual_total_tokens)} > allocated_cap={int(allocated_cap)}."
     )
     final_step = steps[-1]
@@ -1652,10 +1652,10 @@ def _mark_order_run_steps_over_cap_failure(
     )
     details = {
         **dict(final_step.details),
-        "order_run_over_allocated_token_cap": True,
-        "order_run_allocated_completion_token_cap": int(allocated_cap),
-        "order_run_actual_total_tokens": int(actual_total_tokens),
-        "order_run_charged_token_usage": int(allocated_cap),
+        "bara_over_allocated_token_cap": True,
+        "bara_allocated_completion_token_cap": int(allocated_cap),
+        "bara_actual_total_tokens": int(actual_total_tokens),
+        "bara_charged_token_usage": int(allocated_cap),
     }
     return [
         *steps[:-1],

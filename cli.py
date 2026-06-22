@@ -10,17 +10,18 @@ from pathlib import Path
 from typing import Any
 
 from .arms import get_arm_choices, get_partition_arms, normalize_arm_ids
-from .adaptive import (
+from .bara import (
     KNNArmBudgetAllocator,
     build_partition_selector,
     normalize_selector_algorithm,
     selector_apply_preload,
 )
 from .config import (
+    DEFAULT_ABLATION_RESULTS_DIR,
     DEFAULT_EXPERIMENT_CONFIG,
     ExperimentConfig,
-    adaptive_per_task_completion_token_budget,
-    format_adaptive_arm_ids,
+    bara_per_task_completion_token_budget,
+    format_bara_arm_ids,
     format_budget_group_label,
     get_model_choices,
 )
@@ -46,17 +47,32 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     model_names = _requested_model_names(args)
-    for model_index, model_name in enumerate(model_names, 1):
-        config = _resolve_config(args, model_name=model_name)
-        if len(model_names) > 1:
-            logging.info("[models] start %s/%s model=%s", model_index, len(model_names), config.model.model_name)
-        _run_config(config, args=args)
+    task_order_seeds = _requested_task_order_seeds(args)
+    total_runs = len(model_names) * len(task_order_seeds)
+    run_index = 0
+    for model_name in model_names:
+        for task_order_seed in task_order_seeds:
+            run_index += 1
+            config = _resolve_config(
+                args,
+                model_name=model_name,
+                task_order_seed=task_order_seed,
+            )
+            if total_runs > 1:
+                logging.info(
+                    "[runs] start %s/%s model=%s task_order_seed=%s",
+                    run_index,
+                    total_runs,
+                    config.model.model_name,
+                    "canonical" if task_order_seed is None else task_order_seed,
+                )
+            _run_config(config, args=args)
     return 0
 
 
 def _run_config(config: ExperimentConfig, *, args: argparse.Namespace) -> None:
     logging.info(
-        "[start] run_mode=%s dataset=%s model=%s arms=%s limit=%s batch_size=%s samples=%s pass_k=%s progress_interval=%s order_run=%s",
+        "[start] run_mode=%s dataset=%s model=%s arms=%s limit=%s batch_size=%s samples=%s pass_k=%s progress_interval=%s task_order_seed=%s",
         config.run_mode,
         config.dataset_name,
         config.model.model_name,
@@ -66,11 +82,11 @@ def _run_config(config: ExperimentConfig, *, args: argparse.Namespace) -> None:
         config.num_samples_per_task,
         config.pass_k,
         config.progress_interval,
-        config.adaptive.order_run,
+        "canonical" if config.task_order_seed is None else config.task_order_seed,
     )
 
-    if config.run_mode == "adaptive":
-        _run_adaptive(config, static_completion=args.static_completion)
+    if config.run_mode == "bara":
+        _run_bara(config, static_completion=args.static_completion)
     elif config.run_mode == "full_pipeline":
         _run_full_pipeline(config, static_completion=args.static_completion)
     elif config.run_mode == "repeated_sampling":
@@ -79,17 +95,17 @@ def _run_config(config: ExperimentConfig, *, args: argparse.Namespace) -> None:
         _run_all_arms(
             config,
             static_completion=args.static_completion,
-            run_adaptive_after_all_arms=args.then_adaptive,
+            run_bara_after_all_arms=args.then_bara,
         )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Code-generation experiment runner with adaptive workflow routing."
+        description="BARA: Budgeted Adaptive Ranking and Allocation Framework."
     )
     parser.add_argument(
         "--run-mode",
-        choices=("all_arms", "adaptive", "full_pipeline", "repeated_sampling"),
+        choices=("all_arms", "bara", "full_pipeline", "repeated_sampling"),
         default=None,
         help="Optional run-mode override. Defaults to the mode configured inside config.py.",
     )
@@ -119,10 +135,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--arm-id",
         default=None,
-        help="Fixed arm for --run-mode repeated_sampling, e.g. A2.",
+        help="Selected workflow for --run-mode repeated_sampling, e.g. A2.",
     )
     parser.add_argument("--limit", type=int, default=None, help="Optional task limit override for smoke tests.")
-    parser.add_argument("--shuffle-seed", type=int, default=None, help="Optional shuffle seed override.")
     parser.add_argument(
         "--static-completion",
         default=None,
@@ -134,9 +149,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional CUDA_VISIBLE_DEVICES override for this run, e.g. '2,3'.",
     )
     parser.add_argument(
-        "--then-adaptive",
+        "--then-bara",
         action="store_true",
-        help="When set with --run-mode all_arms, automatically run the adaptive mainline afterward.",
+        help="When set with --run-mode all_arms, run BARA after per-workflow generation.",
     )
     parser.add_argument(
         "--t",
@@ -145,46 +160,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Temperature override for --run-mode repeated_sampling only. Defaults to 1.",
     )
     parser.add_argument(
-        "--order_run",
+        "--uniform",
+        dest="uniform_run",
         action="store_true",
-        help="For adaptive runs, execute ranked arms sequentially with dynamic per-task budget allocation until solved.",
+        help="Use a uniformly shuffled workflow ranking instead of BARA ranking.",
     )
     parser.add_argument(
-        "--random_run",
+        "--static",
+        dest="static_run",
         action="store_true",
-        help="With --order_run, ignore selector ranking and shuffle arm order independently for each task.",
+        help="Use a static workflow schedule instead of BARA ranking.",
     )
     parser.add_argument(
-        "--fix_run",
+        "--static-budget",
+        dest="static_budget",
         action="store_true",
-        help="With --order_run, rotate a deterministic fixed arm order across tasks.",
-    )
-    parser.add_argument(
-        "--fix_budget",
-        action="store_true",
-        help="With --order_run, split each task budget by static prior arm weights instead of adaptive allocation.",
+        help="Use static prior weights for budget allocation.",
     )
     parser.add_argument(
         "--free",
         action="store_true",
-        help="With --order_run, give each attempted arm the full remaining task budget.",
+        help="Give each attempted workflow the full remaining task budget."
     )
     parser.add_argument(
-        "--seed",
+        "--seeds",
         type=int,
+        nargs="+",
         default=None,
-        help="Seed for random order-run shuffling. Default comes from config.py.",
+        help="Task-order seeds. Each seed is executed as an independent online run.",
     )
     parser.add_argument(
-        "--fix-start",
+        "--static-order",
         default=None,
-        help="Starting arm for fixed runs, or an explicit order like A0-A1-A2.",
+        help="Static workflow order, for example A0-A1-A2.",
     )
     parser.add_argument(
         "--budget",
         type=int,
         default=None,
-        help="Per-task order-run token budget for the selected dataset.",
+        help="Per-task BARA token budget for the selected dataset."
     )
     parser.add_argument(
         "--budget-allocator",
@@ -195,10 +209,9 @@ def build_parser() -> argparse.ArgumentParser:
             "static_prior",
             "budget",
             "empirical_quantile",
-            "uncensored_lognormal_mle",
         ),
         default=None,
-        help="Order-run budget allocator. quantile maps to empirical_quantile; budget maps to static_prior.",
+        help="BARA budget allocator. quantile maps to empirical_quantile; budget maps to static_prior."
     )
     parser.add_argument("--budget-quantile", type=float, default=None)
     parser.add_argument("--budget-min-neighbors", type=int, default=None)
@@ -207,6 +220,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=get_dataset_choices(),
         help="Optional warm-start dataset override used when preloading selector state.",
+    )
+    parser.add_argument(
+        "--token-aware",
+        dest="token_aware",
+        action="store_true",
+        help="Use the token-aware reward (token_sqrt) and write results to token_aware/ instead of pass_only/.",
     )
     selector_group = parser.add_mutually_exclusive_group()
     selector_group.add_argument(
@@ -236,13 +255,38 @@ def _requested_model_names(args: argparse.Namespace) -> list[str]:
     return [str(model_name) for model_name in raw_model_names]
 
 
-def _resolve_config(args: argparse.Namespace, *, model_name: str | None = None) -> ExperimentConfig:
+def _requested_task_order_seeds(args: argparse.Namespace) -> list[int | None]:
+    run_mode = args.run_mode if args.run_mode is not None else DEFAULT_EXPERIMENT_CONFIG.run_mode
+    requested = getattr(args, "seeds", None)
+    if requested is not None:
+        if run_mode != "bara":
+            raise ValueError("--seeds is only supported with --run-mode bara.")
+        seeds = [int(seed) for seed in requested]
+        if any(seed < 0 for seed in seeds):
+            raise ValueError("--seeds values must be non-negative.")
+        if len(set(seeds)) != len(seeds):
+            raise ValueError("--seeds values must be unique.")
+        return seeds
+    if run_mode == "bara" and (
+        getattr(args, "uniform_run", False) or getattr(args, "static_run", False)
+    ):
+        return [0]
+    return [None]
+
+
+def _resolve_config(
+    args: argparse.Namespace,
+    *,
+    model_name: str | None = None,
+    task_order_seed: int | None = None,
+) -> ExperimentConfig:
     config = DEFAULT_EXPERIMENT_CONFIG
+    resolved_run_mode = args.run_mode if args.run_mode is not None else config.run_mode
     model_config = config.model
     warm_start_config = config.warm_start
     bandit_config = config.bandit
     selector_config = bandit_config.selector
-    adaptive_config = config.adaptive
+    bara_config = config.bara
     vllm_config = config.vllm
 
     resolved_model_name = model_name
@@ -253,70 +297,66 @@ def _resolve_config(args: argparse.Namespace, *, model_name: str | None = None) 
         model_config = replace(model_config, model_name=resolved_model_name)
     if getattr(args, "cuda_visible_devices", None) is not None:
         vllm_config = replace(vllm_config, cuda_visible_devices=args.cuda_visible_devices)
-    if args.warm_start_dataset_name is not None:
+    if getattr(args, "warm_start_dataset_name", None) is not None:
         warm_start_config = replace(warm_start_config, dataset_name=args.warm_start_dataset_name)
     if getattr(args, "knn", False):
         selector_config = replace(selector_config, algorithm="knn")
     bandit_config = replace(bandit_config, selector=selector_config)
-    if getattr(args, "random_run", False) and not getattr(args, "order_run", False):
-        raise ValueError("--random_run requires --order_run.")
-    if getattr(args, "fix_run", False) and not getattr(args, "order_run", False):
-        raise ValueError("--fix_run requires --order_run.")
-    if getattr(args, "fix_budget", False) and not getattr(args, "order_run", False):
-        raise ValueError("--fix_budget requires --order_run.")
-    if getattr(args, "free", False) and not getattr(args, "order_run", False):
-        raise ValueError("--free requires --order_run.")
-    if getattr(args, "random_run", False) and getattr(args, "fix_run", False):
-        raise ValueError("--fix_run cannot be combined with --random_run.")
-    if getattr(args, "free", False) and (
-        getattr(args, "random_run", False) or getattr(args, "fix_run", False) or getattr(args, "fix_budget", False)
-    ):
-        raise ValueError("--free cannot be combined with --random_run, --fix_run, or --fix_budget.")
-    if getattr(args, "fix_start", None) is not None and not getattr(args, "fix_run", False):
-        raise ValueError("--fix-start only applies to --fix_run.")
 
-    adaptive_updates = {}
-    if getattr(args, "order_run", False):
-        adaptive_updates["order_run"] = True
-    if getattr(args, "random_run", False):
-        adaptive_updates["random_run"] = True
-    if getattr(args, "fix_run", False):
-        adaptive_updates["fix_run"] = True
-    if getattr(args, "fix_budget", False):
-        adaptive_updates["fix_budget"] = True
+    if (getattr(args, "uniform_run", False) or getattr(args, "static_run", False)) and resolved_run_mode != "bara":
+        raise ValueError("--uniform and --static require --run-mode bara.")
+    if getattr(args, "uniform_run", False) and getattr(args, "static_run", False):
+        raise ValueError("--uniform cannot be combined with --static.")
+    if getattr(args, "static_budget", False) and resolved_run_mode != "bara":
+        raise ValueError("--static-budget requires --run-mode bara.")
+    if getattr(args, "free", False) and (
+        getattr(args, "uniform_run", False)
+        or getattr(args, "static_run", False)
+        or getattr(args, "static_budget", False)
+    ):
+        raise ValueError("--free cannot be combined with --uniform, --static, or --static-budget.")
+    if getattr(args, "static_order", None) is not None and not getattr(args, "static_run", False):
+        raise ValueError("--static-order only applies to --static.")
+
+    bara_updates: dict[str, object] = {
+        "rank_and_allocate": resolved_run_mode in {"bara", "repeated_sampling"},
+        "task_order_seed": task_order_seed,
+    }
+    if getattr(args, "uniform_run", False):
+        bara_updates["uniform_run"] = True
+    if getattr(args, "static_run", False):
+        bara_updates["static_run"] = True
+    if getattr(args, "static_budget", False):
+        bara_updates["static_budget"] = True
     if getattr(args, "free", False):
-        adaptive_updates["free_run"] = True
-    if getattr(args, "seed", None) is not None:
-        adaptive_updates["order_run_random_seed"] = int(args.seed)
-    if getattr(args, "fix_start", None) is not None:
-        adaptive_updates["order_run_fix_start"] = str(args.fix_start)
+        bara_updates["free_run"] = True
+    if getattr(args, "static_order", None) is not None:
+        bara_updates["static_order"] = str(args.static_order)
     if getattr(args, "budget", None) is not None:
         if args.budget < 0:
             raise ValueError("--budget must be non-negative.")
-        adaptive_updates.update(
+        bara_updates.update(
             {
                 "bigcodebench_per_task_completion_token_budget": int(args.budget),
                 "per_task_completion_token_budget": int(args.budget),
             }
         )
     if getattr(args, "budget_allocator", None) is not None:
-        adaptive_updates["order_run_budget_allocator"] = _normalize_budget_allocator_arg(args.budget_allocator)
+        bara_updates["budget_allocator"] = _normalize_budget_allocator_arg(args.budget_allocator)
     if getattr(args, "budget_quantile", None) is not None:
-        adaptive_updates["order_run_budget_quantile"] = float(args.budget_quantile)
+        bara_updates["budget_quantile"] = float(args.budget_quantile)
     if getattr(args, "budget_min_neighbors", None) is not None:
-        adaptive_updates["order_run_budget_min_neighbors"] = int(args.budget_min_neighbors)
-    if adaptive_updates:
-        adaptive_config = replace(adaptive_config, **adaptive_updates)
+        bara_updates["budget_min_neighbors"] = int(args.budget_min_neighbors)
+    bara_config = replace(bara_config, **bara_updates)
 
-    resolved_run_mode = args.run_mode if args.run_mode is not None else config.run_mode
     repeated_sampling_arm_id = None
-    if args.arm_ids is not None and resolved_run_mode != "all_arms":
+    if getattr(args, "arm_ids", None) is not None and resolved_run_mode != "all_arms":
         raise ValueError("--arm-ids is only supported with --run-mode all_arms. Use --arm-id for repeated_sampling.")
     if getattr(args, "arm_id", None) is not None and resolved_run_mode != "repeated_sampling":
         raise ValueError("--arm-id is only supported with --run-mode repeated_sampling.")
 
     arm_ids = config.arm_ids
-    if args.arm_ids is not None:
+    if getattr(args, "arm_ids", None) is not None:
         arm_ids = normalize_arm_ids(args.arm_ids)
     if resolved_run_mode == "repeated_sampling":
         if getattr(args, "arm_id", None) is None:
@@ -325,12 +365,11 @@ def _resolve_config(args: argparse.Namespace, *, model_name: str | None = None) 
             raise ValueError("--run-mode repeated_sampling requires --budget.")
         repeated_sampling_arm_id = normalize_arm_ids([args.arm_id])[0]
         arm_ids = (repeated_sampling_arm_id,)
-        adaptive_config = replace(
-            adaptive_config,
-            order_run=True,
-            random_run=False,
-            fix_run=False,
-            fix_budget=False,
+        bara_config = replace(
+            bara_config,
+            uniform_run=False,
+            static_run=False,
+            static_budget=False,
             free_run=False,
         )
 
@@ -344,15 +383,16 @@ def _resolve_config(args: argparse.Namespace, *, model_name: str | None = None) 
     return replace(
         config,
         run_mode=resolved_run_mode,
+        token_aware=bool(getattr(args, "token_aware", False)),
         dataset_name=args.dataset_name if args.dataset_name is not None else config.dataset_name,
         arm_ids=arm_ids,
         repeated_sampling_arm_id=repeated_sampling_arm_id,
         limit=args.limit if args.limit is not None else config.limit,
-        shuffle_seed=args.shuffle_seed if args.shuffle_seed is not None else config.shuffle_seed,
+        task_order_seed=task_order_seed,
         model=model_config,
         warm_start=warm_start_config,
         bandit=bandit_config,
-        adaptive=adaptive_config,
+        bara=bara_config,
         vllm=vllm_config,
         generation=generation_config,
     )
@@ -364,7 +404,7 @@ def _run_repeated_sampling(config: ExperimentConfig, *, static_completion: str |
     tasks = _load_tasks(config)
     arms = get_partition_arms((config.repeated_sampling_arm_id,))
     budget_label = format_budget_group_label(
-        adaptive_per_task_completion_token_budget(config.adaptive, config.dataset_name)
+        bara_per_task_completion_token_budget(config.bara, config.dataset_name)
     )
     logging.info(
         "[repeated_sampling] dataset=%s loaded %s tasks task_kinds=%s arm=%s budget=%s temperature=%s",
@@ -375,7 +415,7 @@ def _run_repeated_sampling(config: ExperimentConfig, *, static_completion: str |
         budget_label,
         config.generation.temperature,
     )
-    records = _run_adaptive_mainline(
+    records = _run_bara_mainline(
         config=config,
         tasks=tasks,
         arms=arms,
@@ -402,7 +442,7 @@ def _run_all_arms(
     config: ExperimentConfig,
     *,
     static_completion: str | None,
-    run_adaptive_after_all_arms: bool = False,
+    run_bara_after_all_arms: bool = False,
 ) -> None:
     tasks = _load_tasks(config)
     arms = get_partition_arms(list(config.arm_ids))
@@ -465,33 +505,38 @@ def _run_all_arms(
         on_arm_complete=_persist_arm_records,
     )
 
-    if run_adaptive_after_all_arms:
-        logging.info("[all_arms] starting adaptive run after per-arm generation")
-        adaptive_records = _run_adaptive_mainline(
-            config=config,
+    if run_bara_after_all_arms:
+        logging.info("[all_arms] starting BARA after per-workflow generation")
+        resolved_bara_config = replace(
+            config,
+            run_mode="bara",
+            bara=replace(config.bara, rank_and_allocate=True),
+        )
+        bara_records = _run_bara_mainline(
+            config=resolved_bara_config,
             tasks=tasks,
             arms=arms,
             static_completion=static_completion,
         )
-        _write_adaptive_outputs(config=config, arms=arms, records=adaptive_records)
+        _write_bara_outputs(config=resolved_bara_config, arms=arms, records=bara_records)
 
 
-def _run_adaptive(config: ExperimentConfig, *, static_completion: str | None) -> None:
+def _run_bara(config: ExperimentConfig, *, static_completion: str | None) -> None:
     tasks = _load_tasks(config)
     arms = get_partition_arms(list(config.arm_ids))
     logging.info(
-        "[adaptive] dataset=%s loaded %s tasks task_kinds=%s",
+        "[BARA] dataset=%s loaded %s tasks task_kinds=%s",
         config.dataset_name,
         len(tasks),
         _summarize_task_kinds(tasks),
     )
-    records = _run_adaptive_mainline(
+    records = _run_bara_mainline(
         config=config,
         tasks=tasks,
         arms=arms,
         static_completion=static_completion,
     )
-    _write_adaptive_outputs(config=config, arms=arms, records=records)
+    _write_bara_outputs(config=config, arms=arms, records=records)
 
 
 def _run_full_pipeline(config: ExperimentConfig, *, static_completion: str | None) -> None:
@@ -507,16 +552,17 @@ def _run_full_pipeline(config: ExperimentConfig, *, static_completion: str | Non
         dataset_name=config.dataset_name,
         all_arms_compute_reward_and_features=True,
     )
-    adaptive_config = replace(
+    bara_config = replace(
         config,
-        run_mode="adaptive",
+        run_mode="bara",
         dataset_name=config.dataset_name,
+        bara=replace(config.bara, rank_and_allocate=True),
     )
     logging.info(
-        "[full_pipeline] warm_start_dataset=%s eval_dataset=%s adaptive_dataset=%s",
+        "[full_pipeline] warm_start_dataset=%s eval_dataset=%s bara_dataset=%s",
         warm_start_all_arms_config.dataset_name,
         eval_all_arms_config.dataset_name,
-        adaptive_config.dataset_name,
+        bara_config.dataset_name,
     )
 
     warm_start_reward_path = config.paths.reward_output_path(
@@ -532,22 +578,22 @@ def _run_full_pipeline(config: ExperimentConfig, *, static_completion: str | Non
         _run_all_arms(
             warm_start_all_arms_config,
             static_completion=static_completion,
-            run_adaptive_after_all_arms=False,
+            run_bara_after_all_arms=False,
         )
     _run_all_arms(
         eval_all_arms_config,
         static_completion=static_completion,
-        run_adaptive_after_all_arms=False,
+        run_bara_after_all_arms=False,
     )
-    _run_adaptive(
-        adaptive_config,
+    _run_bara(
+        bara_config,
         static_completion=static_completion,
     )
 
 
-def _run_adaptive_mainline(*, config: ExperimentConfig, tasks, arms, static_completion: str | None):
+def _run_bara_mainline(*, config: ExperimentConfig, tasks, arms, static_completion: str | None):
     runner = _build_runner(config, arms=arms, static_completion=static_completion)
-    return runner.run_adaptive(
+    return runner.run_bara(
         tasks,
         num_samples_per_task=config.num_samples_per_task,
         pass_k=config.pass_k,
@@ -577,11 +623,11 @@ def _build_runner(
             feature_dim=len(feature_extractor.FEATURE_NAMES),
             k=getattr(config.bandit.selector, "knn_k", 20),
             distance_metric=getattr(config.bandit.selector, "knn_distance_metric", "cosine"),
-            risk_tolerance=getattr(config.adaptive, "order_run_budget_epsilon", 0.01),
-            arm_prior_weights=getattr(config.adaptive, "order_run_budget_prior_weights", None),
-            allocation_strategy=getattr(config.adaptive, "order_run_budget_allocator", "mle"),
-            budget_quantile=getattr(config.adaptive, "order_run_budget_quantile", 0.80),
-            min_budget_neighbors=getattr(config.adaptive, "order_run_budget_min_neighbors", 5),
+            risk_tolerance=getattr(config.bara, "budget_epsilon", 0.01),
+            arm_prior_weights=getattr(config.bara, "budget_prior_weights", None),
+            allocation_strategy=getattr(config.bara, "budget_allocator", "mle"),
+            budget_quantile=getattr(config.bara, "budget_quantile", 0.80),
+            min_budget_neighbors=getattr(config.bara, "budget_min_neighbors", 5),
         )
         logging.info(
             "[selector] algorithm=%s arms=%s feature_dim=%s",
@@ -621,8 +667,8 @@ def _build_runner(
         model_client=model_client,
         selector=selector,
         generation_config=config.generation,
-        reward_config=config.reward,
-        adaptive_config=config.adaptive,
+        reward_config=config.token_reward if config.token_aware else config.reward,
+        bara_config=config.bara,
         feature_extractor=feature_extractor,
         budget_allocator=budget_allocator,
         compute_features_and_reward=enable_feature_extractor,
@@ -637,8 +683,8 @@ def _build_runner(
 
 def _load_tasks(config: ExperimentConfig):
     tasks = load_codegen_tasks(config.dataset_name, limit=config.limit)
-    if config.shuffle_seed is not None:
-        random.Random(config.shuffle_seed).shuffle(tasks)
+    if config.task_order_seed is not None:
+        random.Random(config.task_order_seed).shuffle(tasks)
     return tasks
 
 
@@ -656,65 +702,67 @@ def _write_summary(*, summary_path: Path, summary: dict[str, object]) -> None:
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _write_adaptive_outputs(*, config: ExperimentConfig, arms, records) -> None:
-    budget_label = (
-        format_budget_group_label(adaptive_per_task_completion_token_budget(config.adaptive, config.dataset_name))
-        if config.adaptive.order_run
-        else None
+def _write_bara_outputs(*, config: ExperimentConfig, arms, records) -> None:
+    budget_label = format_budget_group_label(
+        bara_per_task_completion_token_budget(config.bara, config.dataset_name)
     )
-    if config.adaptive.order_run:
-        output_path = _online_order_run_output_path(config=config, budget_label=budget_label)
-        summary_path = output_path.with_suffix(".summary.json")
-    else:
-        output_path = config.paths.adaptive_output_path(
-            config.model.model_name,
-            config.dataset_name,
-            config.arm_ids,
-            budget_label=budget_label,
-        )
-        summary_path = config.paths.adaptive_summary_path(
-            config.model.model_name,
-            config.dataset_name,
-            config.arm_ids,
-            budget_label=budget_label,
-        )
+    output_path = _bara_output_path(config=config, budget_label=budget_label)
+    summary_path = output_path.with_suffix(".summary.json")
     _write_records(output_path=output_path, records=records)
     _write_summary(summary_path=summary_path, summary=build_experiment_summary(records, arms=tuple(arms)))
-    logging.info("[adaptive] wrote records=%s -> %s", len(records), output_path)
+    logging.info("[BARA] wrote records=%s -> %s", len(records), output_path)
 
 
-def _online_order_run_output_path(*, config: ExperimentConfig, budget_label: str | None) -> Path:
-    variant = _online_order_run_variant(config)
-    budget_suffix = f"_{budget_label}" if budget_label else ""
-    allocator_prefix = _online_order_run_allocator_prefix(config)
-    if variant in {"order", "random", "fix"} or variant.startswith("fix_order"):
-        filename = f"{config.model.model_name}_{allocator_prefix}{variant}{budget_suffix}.jsonl"
+def _bara_output_path(*, config: ExperimentConfig, budget_label: str | None) -> Path:
+    variant = _bara_variant(config)
+    seed = config.task_order_seed
+    allocator_prefix = _bara_allocator_prefix(config)
+    use_seed_results = seed is not None and (variant == "bara" or seed != 0)
+    if allocator_prefix:
+        results_root = DEFAULT_ABLATION_RESULTS_DIR
+    elif use_seed_results:
+        results_root = config.paths.seed_results_dir
+        if results_root is None:
+            main_root = config.paths.experiment_results_dir
+            results_root = main_root.parent / "seeds" if main_root.name == "main" else main_root / "seeds"
     else:
-        arm_label = format_adaptive_arm_ids(config.arm_ids)
-        filename = f"{config.model.model_name}_{allocator_prefix}{variant}_{arm_label}{budget_suffix}.jsonl"
-    return config.paths.model_results_dir(config.model.model_name, config.dataset_name) / filename
+        results_root = config.paths.experiment_results_dir
+    routed_paths = replace(config.paths, experiment_results_dir=results_root)
+
+    budget_suffix = f"_{budget_label}" if budget_label else ""
+    seed_suffix = ""
+    if seed is not None and (variant == "bara" or seed != 0):
+        seed_suffix = f"_seed{int(seed)}"
+
+    if variant.startswith("static_order") or variant in {"bara", "uniform"}:
+        filename = f"{config.model.model_name}_{allocator_prefix}{variant}{seed_suffix}{budget_suffix}.jsonl"
+    else:
+        arm_label = format_bara_arm_ids(config.arm_ids)
+        filename = (
+            f"{config.model.model_name}_{allocator_prefix}{variant}_{arm_label}"
+            f"{seed_suffix}{budget_suffix}.jsonl"
+        )
+    return routed_paths.model_results_dir(config.model.model_name, config.dataset_name, token_optimized=config.token_aware) / filename
 
 
-def _online_order_run_variant(config: ExperimentConfig) -> str:
-    adaptive = config.adaptive
-    if getattr(adaptive, "free_run", False):
+def _bara_variant(config: ExperimentConfig) -> str:
+    bara = config.bara
+    if getattr(bara, "free_run", False):
         return "free"
-    if getattr(adaptive, "fix_budget", False):
+    if getattr(bara, "static_budget", False):
         return "budget"
-    if getattr(adaptive, "fix_run", False):
-        fix_start = str(getattr(adaptive, "order_run_fix_start", "") or "")
-        if "-" in fix_start:
-            return f"fix_order{fix_start}"
-        return "fix"
-    if getattr(adaptive, "random_run", False):
-        return "random"
-    return "order"
+    if getattr(bara, "static_run", False):
+        static_order = str(getattr(bara, "static_order", "A0-A1-A2") or "A0-A1-A2")
+        return f"static_order{static_order}"
+    if getattr(bara, "uniform_run", False):
+        return "uniform"
+    return "bara"
 
 
-def _online_order_run_allocator_prefix(config: ExperimentConfig) -> str:
-    allocator = str(getattr(config.adaptive, "order_run_budget_allocator", "") or "").strip().lower()
-    default_allocator = str(DEFAULT_EXPERIMENT_CONFIG.adaptive.order_run_budget_allocator).strip().lower()
-    if not allocator or allocator == default_allocator or getattr(config.adaptive, "fix_budget", False):
+def _bara_allocator_prefix(config: ExperimentConfig) -> str:
+    allocator = str(getattr(config.bara, "budget_allocator", "") or "").strip().lower()
+    default_allocator = str(DEFAULT_EXPERIMENT_CONFIG.bara.budget_allocator).strip().lower()
+    if not allocator or allocator == default_allocator or getattr(config.bara, "static_budget", False):
         return ""
     return f"allocator-{allocator}_"
 
