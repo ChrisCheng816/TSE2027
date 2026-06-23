@@ -83,6 +83,7 @@ Results use repository-relative paths. Each experiment bucket contains one subdi
 
 - `results/main/pass_only/`: canonical pass-only BARA, Uniform seed 0, Static seed 0, and single-workflow results.
 - `results/main/token_aware/`: corresponding main token-aware results.
+- `results/repeated_sampling/`: repeated-sampling baselines grouped by model and workflow (`direct_coding`, `plan_structured_coding`, and `test_guided_repair`).
 - `results/seeds/pass_only/`: pass-only BARA task-order seeds, including BARA seed 0, plus nonzero Uniform and Static seeds.
 - `results/seeds/token_aware/`: corresponding token-aware seeded results.
 - `results/sensitivity/pass_only/`: pass-only neighborhood-size sensitivity results.
