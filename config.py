@@ -19,6 +19,19 @@ MODEL_SPECS = [
 ]
 MODEL_SPEC_MAP = {spec["name"]: spec["path"] for spec in MODEL_SPECS}
 DEFAULT_MODEL_NAME = MODEL_SPECS[0]["name"]
+REPEATED_SAMPLING_WORKFLOW_SLUGS = {
+    "A0": "direct_coding",
+    "A1": "plan_structured_coding",
+    "A2": "test_guided_repair",
+}
+
+
+def repeated_sampling_workflow_slug(arm_id: str) -> str:
+    normalized_arm_id = normalize_arm_ids([arm_id])[0]
+    try:
+        return REPEATED_SAMPLING_WORKFLOW_SLUGS[normalized_arm_id]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported repeated-sampling arm: {arm_id}") from exc
 
 
 def format_bara_arm_ids(arm_ids: tuple[str, ...] | list[str]) -> str:
@@ -73,11 +86,9 @@ class PathConfig:
     def arm_summary_path(self, model_name: str, arm_id: str, dataset_name: str) -> Path:
         return self.model_results_dir(model_name, dataset_name) / f"{model_name}_{arm_id}.summary.json"
 
-    def repeated_sampling_model_results_dir(self, model_name: str, dataset_name: str) -> Path:
-        dataset_bucket = results_dataset_bucket(dataset_name)
-        if dataset_bucket is None:
-            return self.repeated_sampling_results_dir / model_name
-        return self.repeated_sampling_results_dir / dataset_bucket / model_name
+    def repeated_sampling_model_results_dir(self, model_name: str, arm_id: str, dataset_name: str) -> Path:
+        workflow_slug = repeated_sampling_workflow_slug(arm_id)
+        return self.repeated_sampling_results_dir / model_name / workflow_slug
 
     def repeated_sampling_output_path(
         self,
@@ -88,9 +99,10 @@ class PathConfig:
         budget_label: str | None = None,
     ) -> Path:
         budget_suffix = f"_{budget_label}" if budget_label else ""
+        workflow_slug = repeated_sampling_workflow_slug(arm_id)
         return (
-            self.repeated_sampling_model_results_dir(model_name, dataset_name)
-            / f"{model_name}_{arm_id}{budget_suffix}.jsonl"
+            self.repeated_sampling_model_results_dir(model_name, arm_id, dataset_name)
+            / f"{model_name}_{workflow_slug}_{dataset_name}{budget_suffix}.jsonl"
         )
 
     def repeated_sampling_summary_path(

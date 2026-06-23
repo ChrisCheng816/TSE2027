@@ -18,6 +18,46 @@ VECTOR_FIELDS = ("feature_vector", "decision_feature_vector")
 LEGACY_DEBUG_FIELD = "debug_" + "artifact"
 
 
+def sanitize_result_paths(value: Any) -> Any:
+    if isinstance(value, str):
+        return _sanitize_result_string(value)
+    if isinstance(value, list):
+        return [sanitize_result_paths(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_result_paths(item) for item in value)
+    if isinstance(value, dict):
+        return {key: sanitize_result_paths(item) for key, item in value.items()}
+    return value
+
+
+def _sanitize_result_string(text: str) -> str:
+    sanitized = text
+    replacements: list[tuple[str, str]] = []
+    repo_parent = PROJECT_ROOT.parent
+
+    for local_root in (PROJECT_ROOT, repo_parent / "codegen_agent"):
+        root_text = local_root.as_posix()
+        replacements.append((root_text + "/", "./"))
+        replacements.append((root_text, "."))
+
+    parent_text = repo_parent.as_posix()
+    replacements.append((parent_text + "/", "./"))
+    replacements.append((parent_text, "."))
+
+    home_text = Path.home().as_posix()
+    replacements.append((home_text + "/", "~/"))
+    replacements.append((home_text, "~"))
+
+    for source, target in sorted(replacements, key=lambda item: len(item[0]), reverse=True):
+        if source and source in sanitized:
+            sanitized = sanitized.replace(source, target)
+
+    user_name = Path.home().name
+    if user_name and user_name in sanitized:
+        sanitized = sanitized.replace(user_name, "user")
+    return sanitized
+
+
 def relative_display_path(path: str | Path) -> str:
     candidate = Path(path)
     try:
@@ -104,7 +144,7 @@ def compact_result_row(
     debug_index: int,
     existing_debug_row: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    full_row = _rehydrate_row(copy.deepcopy(row), existing_debug_row)
+    full_row = sanitize_result_paths(_rehydrate_row(copy.deepcopy(row), existing_debug_row))
     result_schema = _classify_result_schema(full_row, result_path=Path(result_path))
 
     debug_payload = _base_debug_payload(

@@ -28,21 +28,26 @@ REPEATED_WORKFLOW_LABEL = {
     "plan_structured_coding": "Repeated Sampling (Plan-Structured)",
     "test_guided_repair": "Repeated Sampling (Test-Guided)",
 }
+SINGLE_ARM_LABEL = {
+    "A0": "Direct Coding",
+    "A1": "Plan-Structured Coding",
+    "A2": "Test-Guided Repair",
+}
 
 RQ2_TABLE = {
     "qwen3-30b": {
-        "Static": {"solve": [56.3, 60.5, 62.1], "firsthit": [48.1, 49.0, 49.4]},
+        "Static": {"solve": [56.3, 60.5, 62.1], "firsthit": [47.1, 49.0, 49.4]},
         "Uniform": {"solve": [55.8, 60.5, 62.1], "firsthit": [46.3, 49.6, 50.1]},
-        "BARA": {"solve": [59.0, 61.9, 62.1], "firsthit": [48.5, 53.6, 54.1]},
+        "BARA": {"solve": [59.0, 61.9, 62.1], "firsthit": [48.4, 53.6, 54.1]},
     },
     "qwen2.5-32b": {
-        "Static": {"solve": [54.5, 60.2, 61.1], "firsthit": [46.7, 49.6, 50.4]},
+        "Static": {"solve": [54.5, 60.2, 61.1], "firsthit": [46.4, 49.6, 50.4]},
         "Uniform": {"solve": [54.4, 60.1, 61.1], "firsthit": [46.1, 48.3, 49.2]},
         "BARA": {"solve": [58.0, 61.1, 61.4], "firsthit": [48.1, 52.2, 53.3]},
     },
     "claude-opus-4.8": {
-        "Static": {"solve": [69.4, 74.4, 76.1], "firsthit": [62.5, 66.1, 65.6]},
-        "Uniform": {"solve": [68.7, 75.1, 76.1], "firsthit": [62.4, 65.8, 66.1]},
+        "Static": {"solve": [69.4, 74.5, 76.1], "firsthit": [62.1, 67.0, 65.6]},
+        "Uniform": {"solve": [68.7, 75.1, 76.1], "firsthit": [61.8, 65.8, 66.1]},
         "BARA": {"solve": [72.4, 76.3, 76.9], "firsthit": [64.2, 66.4, 68.0]},
     },
 }
@@ -63,7 +68,7 @@ RQ3_TABLE = {
     "claude-opus-4.8": {
         "Static prior split": {"solve": [67.9, 74.7, 75.4], "capped": [30.5, 6.4, 6.4]},
         "Equal split": {"solve": [71.0, 74.0, 75.4], "capped": [18.5, 7.5, 3.0]},
-        "Empirical quantile": {"solve": [66.1, 73.0, 75.8], "capped": [33.0, 12.0, 5.8]},
+        "Empirical quantile": {"solve": [66.1, 73.0, 75.8], "capped": [33.0, 12.2, 5.8]},
         "BARA budget": {"solve": [72.4, 76.3, 76.9], "capped": [16.2, 3.6, 1.2]},
     },
 }
@@ -79,7 +84,7 @@ RQ4_TABLE = {
     },
     "claude-opus-4.8": {
         "PO": {"solve": [72.4, 76.3, 76.9], "firsthit": [64.2, 66.4, 68.0], "cost": [3.97, 5.37, 7.07]},
-        "TA": {"solve": [72.5, 76.3, 77.0], "firsthit": [63.8, 66.1, 66.8], "cost": [3.93, 4.51, 4.64]},
+        "TA": {"solve": [72.5, 76.5, 77.0], "firsthit": [63.8, 66.1, 66.8], "cost": [3.91, 4.51, 4.62]},
     },
 }
 
@@ -320,27 +325,26 @@ def select_run_matching_table(
     aux_target: float,
     aux_metric: str,
 ) -> RunArrays:
-    def score(run: RunArrays) -> tuple[int, float, int, float, str]:
+    def score(run: RunArrays) -> tuple[int, int, float, float, str]:
         solve_pt = metric_value(run, "solve")
         aux_pt = metric_value(run, aux_metric)
         return (
             0 if rounded_match(solve_pt, solve_target) else 1,
-            abs(solve_pt - solve_target),
             0 if rounded_match(aux_pt, aux_target) else 1,
+            abs(solve_pt - solve_target),
             abs(aux_pt - aux_target),
             run.name,
         )
 
     selected = min(runs, key=score)
     selected_score = score(selected)
-    if selected_score[0] or selected_score[2]:
+    if selected_score[0] or selected_score[1]:
         print(
             f"[warn] {label}: closest run {selected.name} has "
             f"solve={metric_value(selected, 'solve'):.3f}, {aux_metric}={metric_value(selected, aux_metric):.3f}; "
             f"target solve={solve_target:.1f}, {aux_metric}={aux_target:.1f}"
         )
     return selected
-
 
 def select_metric_series(
     label: str,
@@ -418,6 +422,19 @@ def repeated_sampling_choices(root: Path, model: str, budget: int, dataset: str)
             f"{model}_{workflow}_{dataset}_budget-{budget}.jsonl",
         )
         run = load_run(path)
+        choice = choice_from_run(run, "solve", metric_value(run, "solve"))
+        choices.append(
+            SeriesChoice(label, choice.files, choice.task_ids, choice.series, choice.table_pt, choice.actual_pt)
+        )
+    return choices
+
+
+def single_arm_choices(repo_root: Path, model: str, budget: int) -> list[SeriesChoice]:
+    choices = []
+    root = repo_root / "results" / "main" / "pass_only" / model
+    for arm_id, label in SINGLE_ARM_LABEL.items():
+        path = root / f"{model}_{arm_id}.jsonl"
+        run = load_run(path, single_arm_budget=budget)
         choice = choice_from_run(run, "solve", metric_value(run, "solve"))
         choices.append(
             SeriesChoice(label, choice.files, choice.task_ids, choice.series, choice.table_pt, choice.actual_pt)
@@ -621,11 +638,35 @@ def build_rq1_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[d
                 "solve",
                 RQ2_TABLE[model]["BARA"]["solve"][idx],
             )
-            baselines = repeated_sampling_choices(
-                args.repeated_sampling_root, model, budget, args.dataset_name
+            best_single = max(
+                single_arm_choices(args.repo_root, model, budget),
+                key=lambda choice: choice.actual_pt,
             )
-            baseline = max(baselines, key=lambda choice: choice.actual_pt)
-            rows.append(bootstrap_row(table="rq1", model=model, budget=budget, metric="solve", bara_label="BARA", bara=bara, baseline_label=baseline.name, baseline=baseline, direction="higher", rng=rng, samples=args.bootstrap_samples))
+            best_repeated = max(
+                repeated_sampling_choices(
+                    args.repeated_sampling_root, model, budget, args.dataset_name
+                ),
+                key=lambda choice: choice.actual_pt,
+            )
+            for comparison, baseline in (
+                ("best_single_arm", best_single),
+                ("best_repeated_sampling", best_repeated),
+            ):
+                row = bootstrap_row(
+                    table="rq1",
+                    model=model,
+                    budget=budget,
+                    metric="solve",
+                    bara_label="BARA",
+                    bara=bara,
+                    baseline_label=baseline.name,
+                    baseline=baseline,
+                    direction="higher",
+                    rng=rng,
+                    samples=args.bootstrap_samples,
+                )
+                row["comparison"] = comparison
+                rows.append(row)
     return rows
 
 
@@ -697,7 +738,7 @@ def build_rq4_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[d
             idx = budget_index(budget)
             po_bara_runs = bara_runs(args.repo_root, "pass_only", model, budget, args.dataset_name)
             ta_bara_runs = bara_runs(args.repo_root, "token_aware", model, budget, args.dataset_name)
-            for metric in ("solve", "firsthit", "cost"):
+            for metric in ("solve", "cost"):
                 po = choice_from_runs("stratified_11_po_bara_runs", po_bara_runs, metric, RQ4_TABLE[model]["PO"][metric][idx])
                 ta = choice_from_runs("stratified_11_ta_bara_runs", ta_bara_runs, metric, RQ4_TABLE[model]["TA"][metric][idx])
                 rows.append(bootstrap_row(table="rq4", model=model, budget=budget, metric=metric, bara_label="TA", bara=ta, baseline_label="PO", baseline=po, direction="lower" if metric == "cost" else "higher", rng=rng, samples=args.bootstrap_samples))
@@ -707,8 +748,29 @@ def build_rq4_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[d
 def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
     if not rows:
         return
+    fieldnames = ["model", "budget", "metric"]
+    if any("comparison" in row for row in rows):
+        fieldnames.append("comparison")
+    fieldnames.extend(
+        [
+            "baseline_label",
+            "bara_actual_pt",
+            "baseline_actual_pt",
+            "diff",
+            "ci_low",
+            "ci_high",
+            "p_value",
+            "significant",
+            "direction",
+        ]
+    )
     with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=fieldnames,
+            extrasaction="ignore",
+            lineterminator="\n",
+        )
         writer.writeheader()
         writer.writerows(rows)
 
@@ -742,21 +804,16 @@ def main() -> int:
     rq2 = build_rq2_rows(args, rng)
     rq3 = build_rq3_rows(args, rng)
     rq4 = build_rq4_rows(args, rng)
-    all_rows = rq1 + rq2 + rq3 + rq4
 
     write_csv(output_dir / "rq1_bootstrap.csv", rq1)
     write_csv(output_dir / "rq2_bootstrap.csv", rq2)
     write_csv(output_dir / "rq3_bootstrap.csv", rq3)
     write_csv(output_dir / "rq4_bootstrap.csv", rq4)
-    write_csv(output_dir / "all_bootstrap.csv", all_rows)
-    write_summary(output_dir / "summary.txt", all_rows)
 
-    print((output_dir / "summary.txt").read_text())
     print(f"Wrote {output_dir / 'rq1_bootstrap.csv'}")
     print(f"Wrote {output_dir / 'rq2_bootstrap.csv'}")
     print(f"Wrote {output_dir / 'rq3_bootstrap.csv'}")
     print(f"Wrote {output_dir / 'rq4_bootstrap.csv'}")
-    print(f"Wrote {output_dir / 'all_bootstrap.csv'}")
     return 0
 
 
