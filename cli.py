@@ -22,7 +22,7 @@ from .config import (
     format_budget_group_label,
     get_model_choices,
 )
-from .dataset import get_dataset_choices, load_codegen_tasks, write_jsonl
+from .dataset import get_dataset_choices, load_codegen_tasks, normalize_dataset_name, write_jsonl
 from .features import build_feature_extractor
 from .models import (
     AnthropicBatchModelClient,
@@ -104,6 +104,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dataset-name",
+        "--dataset",
+        dest="dataset_name",
         default=None,
         choices=get_dataset_choices(),
         help="Optional dataset override from the internal dataset registry.",
@@ -258,6 +260,9 @@ def _resolve_config(
 ) -> ExperimentConfig:
     config = DEFAULT_EXPERIMENT_CONFIG
     resolved_run_mode = args.run_mode if args.run_mode is not None else config.run_mode
+    resolved_dataset_name = (
+        normalize_dataset_name(args.dataset_name) if args.dataset_name is not None else config.dataset_name
+    )
     model_config = config.model
     bandit_config = config.bandit
     selector_config = bandit_config.selector
@@ -296,7 +301,11 @@ def _resolve_config(
     if getattr(args, "budget", None) is not None:
         if args.budget < 0:
             raise ValueError("--budget must be non-negative.")
-        bara_updates["bigcodebench_per_task_completion_token_budget"] = int(args.budget)
+        normalized_budget_dataset = resolved_dataset_name.lower().replace("_", "-")
+        if "livecodebench" in normalized_budget_dataset:
+            bara_updates["livecodebench_per_task_completion_token_budget"] = int(args.budget)
+        else:
+            bara_updates["bigcodebench_per_task_completion_token_budget"] = int(args.budget)
     if getattr(args, "budget_allocator", None) is not None:
         bara_updates["budget_allocator"] = _normalize_budget_allocator_arg(args.budget_allocator)
     if getattr(args, "budget_quantile", None) is not None:
@@ -338,7 +347,7 @@ def _resolve_config(
         config,
         run_mode=resolved_run_mode,
         token_aware=bool(getattr(args, "token_aware", False)),
-        dataset_name=args.dataset_name if args.dataset_name is not None else config.dataset_name,
+        dataset_name=resolved_dataset_name,
         arm_ids=arm_ids,
         repeated_sampling_arm_id=repeated_sampling_arm_id,
         limit=args.limit if args.limit is not None else config.limit,

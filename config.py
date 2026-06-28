@@ -51,6 +51,8 @@ def format_budget_group_label(per_task_completion_token_budget: int | None) -> s
 
 def results_dataset_bucket(dataset_name: str, *, token_optimized: bool = False) -> str | None:
     normalized_dataset_name = dataset_name.lower().replace("_", "-")
+    if "livecodebench" in normalized_dataset_name:
+        return "livecodebench/token_aware" if token_optimized else "livecodebench/pass_only"
     if "bigcodebench" in normalized_dataset_name:
         return "token_aware" if token_optimized else "pass_only"
     return None
@@ -153,6 +155,7 @@ class BanditConfig:
 class BARAConfig:
     # ===== Mainline BARA controls =====
     bigcodebench_per_task_completion_token_budget: int | None = 15000
+    livecodebench_per_task_completion_token_budget: int | None = 15000
     rank_and_allocate: bool = False
     uniform_run: bool = False
     static_run: bool = False
@@ -183,6 +186,9 @@ def bara_per_task_completion_token_budget(
     bara_config: BARAConfig,
     dataset_name: str,
 ) -> int | None:
+    normalized_dataset_name = str(dataset_name or "").lower().replace("_", "-")
+    if "livecodebench" in normalized_dataset_name:
+        return bara_config.livecodebench_per_task_completion_token_budget
     return bara_config.bigcodebench_per_task_completion_token_budget
 
 

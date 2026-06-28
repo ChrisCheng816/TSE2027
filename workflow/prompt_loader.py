@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 PROMPTS_ROOT = Path(__file__).resolve().parent.parent / "prompts"
-PROMPT_MODULE_PREFIX = "codegen_agent.prompts"
+PROMPT_MODULE_PREFIX = f"{__package__.rsplit('.', 1)[0]}.prompts"
 
 
 class _DefaultPromptValueDict(dict[str, str]):

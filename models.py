@@ -646,6 +646,7 @@ def _render_prompt(processor, prompt: PromptBundle) -> str:
                 messages,
                 tokenize=False,
                 add_generation_prompt=True,
+                enable_thinking=False,
             )
         except TypeError:
             logging.warning("apply_chat_template rejected text-only messages; falling back to raw prompt.")
@@ -691,6 +692,11 @@ def _clean_model_output(raw_text: str, prompt: PromptBundle) -> str:
         return _remove_standalone_code_fence_lines(_strip_wrapping_code_fences(cleaned))
     if prompt.arm_id == "A1" and prompt.phase == "final_code":
         return cleaned
+    if _is_livecodebench_a2_repair_prompt(prompt):
+        return _sanitize_livecodebench_a2_repair_completion(
+            cleaned,
+            preserve_runtime_entrypoint=_should_preserve_runtime_entrypoint(prompt),
+        )
     if _is_deepseek_bigcodebench_prompt(prompt):
         cleaned = _strip_deepseek_bigcodebench_structured_code_tail(cleaned)
     return _sanitize_python_completion(
@@ -698,6 +704,13 @@ def _clean_model_output(raw_text: str, prompt: PromptBundle) -> str:
         preserve_runtime_entrypoint=_should_preserve_runtime_entrypoint(prompt),
     )
 
+
+def _is_livecodebench_a2_repair_prompt(prompt: PromptBundle) -> bool:
+    return (
+        str(getattr(prompt, "dataset_name", "") or "") == "livecodebench-release_v6"
+        and str(getattr(prompt, "arm_id", "") or "") == "A2"
+        and str(getattr(prompt, "phase", "") or "") == "repair_code"
+    )
 
 def _is_deepseek_bigcodebench_prompt(prompt: PromptBundle) -> bool:
     return (
@@ -767,6 +780,53 @@ def _sanitize_python_completion(text: str, *, preserve_runtime_entrypoint: bool 
             return validated
     return candidates[0] if candidates else ""
 
+
+
+def _sanitize_livecodebench_a2_repair_completion(
+    text: str,
+    *,
+    preserve_runtime_entrypoint: bool = False,
+) -> str:
+    candidates = _candidate_livecodebench_a2_repair_completions(text)
+    for candidate in candidates:
+        stripped_test_tail = _strip_top_level_test_tail(
+            candidate,
+            preserve_runtime_entrypoint=preserve_runtime_entrypoint,
+        )
+        validated = _validated_python_module_with_code_signal(stripped_test_tail)
+        if validated is not None:
+            return validated
+    for candidate in candidates:
+        validated = _validated_python_module_with_code_signal(candidate)
+        if validated is not None:
+            return validated
+    return _sanitize_python_completion(text, preserve_runtime_entrypoint=preserve_runtime_entrypoint)
+
+
+def _candidate_livecodebench_a2_repair_completions(text: str) -> list[str]:
+    candidates: list[str] = []
+    base = _remove_standalone_code_fence_lines(_strip_wrapping_code_fences(text))
+
+    marked_code = _extract_marked_code_section(base)
+    if marked_code:
+        candidates.append(marked_code)
+
+    fenced_blocks = _extract_fenced_code_blocks(text)
+    python_blocks = [body for language, body in fenced_blocks if language in {"python", "py"}]
+    candidates.extend(
+        _remove_standalone_code_fence_lines(_strip_wrapping_code_fences(block))
+        for block in reversed(python_blocks)
+    )
+    candidates.extend(
+        _remove_standalone_code_fence_lines(_strip_wrapping_code_fences(body))
+        for language, body in reversed(fenced_blocks)
+        if language not in {"python", "py"}
+    )
+
+    if base:
+        candidates.append(base)
+
+    return _unique_nonempty_candidates(candidates)
 
 
 def _candidate_python_completions(text: str) -> list[str]:
@@ -878,6 +938,9 @@ def _should_preserve_runtime_entrypoint(prompt: PromptBundle) -> bool:
         return True
     user_text = (prompt.user or "").lower()
     return (
+        "stdin/stdout livecodebench task" in user_text
+        and "read from stdin and write the final answer to stdout" in user_text
+    ) or (
         "read the inputs from stdin" in user_text
         and "write the answer to stdout" in user_text
     )
