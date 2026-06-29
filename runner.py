@@ -206,6 +206,8 @@ class ExperimentRunner:
                 actual_knn_total_tokens = self._steps_knn_total_token_cost(arm_steps)
                 over_allocated_cap = actual_total_tokens > allocated_cap
                 charged_token_usage = int(allocated_cap) if over_allocated_cap else actual_total_tokens
+                if charged_token_usage <= 0:
+                    charged_token_usage = int(allocated_cap)
                 if over_allocated_cap:
                     arm_steps = _mark_bara_steps_over_cap_failure(
                         arm_steps,

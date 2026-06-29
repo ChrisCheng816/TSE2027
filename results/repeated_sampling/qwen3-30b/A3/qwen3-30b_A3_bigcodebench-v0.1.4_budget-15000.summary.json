@@ -1,0 +1,29 @@
+{
+  "num_tasks": 1140,
+  "reward_count": 0,
+  "mean_reward": null,
+  "prompt_token_count": 1140,
+  "mean_prompt_tokens": 1981.5561403508773,
+  "completion_token_count": 1140,
+  "mean_completion_tokens": 1638.9798245614036,
+  "total_token_count": 1140,
+  "mean_total_tokens": 8082.785964912281,
+  "num_passed_tasks": 635,
+  "pass_rate": 0.5570175438596491,
+  "mean_arms_used_per_task": 1.0,
+  "arm_pull_counts": {
+    "A3": 1140
+  },
+  "arm_mean_rewards": {
+    "A3": 0.0
+  },
+  "arm_mean_prompt_tokens": {
+    "A3": 1981.5561403508773
+  },
+  "arm_mean_completion_tokens": {
+    "A3": 1638.9798245614036
+  },
+  "arm_mean_total_tokens": {
+    "A3": 8082.785964912281
+  }
+}
