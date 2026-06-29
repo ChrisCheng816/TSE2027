@@ -16,6 +16,13 @@ SINGLE_ARM_PREDICTION_FIELDS = ("raw_output", "stdout", "stderr", "prediction_in
 IDENTITY_FIELDS = ("task_id", "arm_id", "model_name", "dataset_name")
 VECTOR_FIELDS = ("feature_vector", "decision_feature_vector")
 LEGACY_DEBUG_FIELD = "debug_" + "artifact"
+PUBLIC_RESULT_DROP_KEYS = {
+    "excluded_temperature_zero_files",
+    "fix_run",
+    "random_run",
+    "source_files",
+}
+PUBLIC_RESULT_DROP_PREFIXES = ("adaptive_", "order_run_")
 
 
 def sanitize_result_paths(value: Any) -> Any:
@@ -271,10 +278,23 @@ def _base_result_row(row: dict[str, Any]) -> dict[str, Any]:
         "selection_reason",
         "selector_summary",
         "bara_summary",
-        "order_run_summary",
         LEGACY_DEBUG_FIELD,
     }
-    return {key: copy.deepcopy(value) for key, value in row.items() if key not in excluded}
+    compact = {key: copy.deepcopy(value) for key, value in row.items() if key not in excluded}
+    return _drop_public_result_noise(compact)
+
+
+def _drop_public_result_noise(value: Any) -> Any:
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in PUBLIC_RESULT_DROP_KEYS or any(key.startswith(prefix) for prefix in PUBLIC_RESULT_DROP_PREFIXES):
+                continue
+            cleaned[key] = _drop_public_result_noise(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_drop_public_result_noise(item) for item in value]
+    return value
 
 
 def _base_debug_payload(
@@ -303,11 +323,8 @@ def _classify_result_schema(row: dict[str, Any], *, result_path: Path) -> str:
     filename = result_path.name
     if bool(metadata.get("bara_rank_and_allocate")) or bool(selection_reason.get("bara")):
         return "bara"
-    if bool(metadata.get("adaptive_order_run")) or bool(selection_reason.get("order_run")):
-        return "bara"
     bara_markers = ("_bara_", "_uniform_", "_static_order", "_budget_")
-    legacy_markers = ("_order_", "_order_random_", "_fix_run_")
-    if any(marker in filename for marker in (*bara_markers, *legacy_markers)):
+    if any(marker in filename for marker in bara_markers):
         return "bara"
     return "single_arm"
 
@@ -427,8 +444,6 @@ def _selector_summary(selection_reason: dict[str, Any]) -> dict[str, Any]:
 def _bara_summary(selection_reason: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
     trace = selection_reason.get("bara_execution_trace")
     if not isinstance(trace, list):
-        trace = selection_reason.get("order_run_execution_trace")
-    if not isinstance(trace, list):
         trace = []
     compact_trace = [_compact_trace_item(item) for item in trace if isinstance(item, dict)]
     attempted_arms = [item["arm_id"] for item in compact_trace if item.get("arm_id") is not None]
@@ -436,33 +451,26 @@ def _bara_summary(selection_reason: dict[str, Any], row: dict[str, Any]) -> dict
     return {
         "enabled": bool(
             selection_reason.get("bara")
-            or selection_reason.get("order_run")
             or row.get("metadata", {}).get("bara_rank_and_allocate")
-            or row.get("metadata", {}).get("adaptive_order_run")
         ),
         "uniform": bool(
             selection_reason.get("bara_uniform_run")
             or row.get("metadata", {}).get("bara_uniform_run")
-            or row.get("metadata", {}).get("adaptive_random_run")
         ),
         "static": bool(
             selection_reason.get("bara_static_run")
             or row.get("metadata", {}).get("bara_static_run")
-            or row.get("metadata", {}).get("adaptive_fix_run")
         ),
         "static_budget": bool(
             selection_reason.get("bara_static_budget")
             or row.get("metadata", {}).get("bara_static_budget")
-            or row.get("metadata", {}).get("adaptive_fix_budget")
         ),
         "free_run": bool(
             selection_reason.get("bara_free_run")
             or row.get("metadata", {}).get("bara_free_run")
-            or row.get("metadata", {}).get("adaptive_free_run")
         ),
         "task_completion_token_budget": (
             selection_reason.get("bara_task_completion_token_budget")
-            or selection_reason.get("order_run_task_completion_token_budget")
             or row.get("completion_token_budget")
         ),
         "attempted_arms": attempted_arms,

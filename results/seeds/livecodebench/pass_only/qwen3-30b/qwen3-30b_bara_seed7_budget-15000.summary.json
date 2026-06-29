@@ -1,0 +1,56 @@
+{
+  "num_tasks": 1055,
+  "reward_count": 1055,
+  "mean_reward": 0.5725118483412323,
+  "prompt_token_count": 1055,
+  "mean_prompt_tokens": 1743.6483412322275,
+  "completion_token_count": 1055,
+  "mean_completion_tokens": 2111.0018957345974,
+  "total_token_count": 1055,
+  "mean_total_tokens": 7978.102369668247,
+  "num_passed_tasks": 604,
+  "pass_rate": 0.5725118483412323,
+  "mean_arms_used_per_task": 1.5706161137440757,
+  "arm_pull_counts": {
+    "A0": 232,
+    "A1": 564,
+    "A2": 259
+  },
+  "arm_mean_rewards": {
+    "A0": 0.40948275862068967,
+    "A1": 0.7641843971631206,
+    "A2": 0.30115830115830117
+  },
+  "arm_mean_prompt_tokens": {
+    "A0": 1919.2887931034484,
+    "A1": 965.6702127659574,
+    "A2": 3280.4478764478763
+  },
+  "arm_mean_completion_tokens": {
+    "A0": 2262.4612068965516,
+    "A1": 1385.6790780141844,
+    "A2": 3554.799227799228
+  },
+  "arm_mean_total_tokens": {
+    "A0": 9487.969827586207,
+    "A1": 5614.090425531915,
+    "A2": 11773.521235521235
+  },
+  "bara_arm_attempt_position_counts": {
+    "A0": {
+      "first": 192,
+      "second": 100,
+      "third": 97
+    },
+    "A1": {
+      "first": 748,
+      "second": 92,
+      "third": 27
+    },
+    "A2": {
+      "first": 115,
+      "second": 201,
+      "third": 85
+    }
+  }
+}

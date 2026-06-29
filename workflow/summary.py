@@ -26,15 +26,11 @@ def build_experiment_summary(
         metadata = getattr(record, "metadata", None)
         if isinstance(metadata, dict):
             attempted_arms = metadata.get("bara_attempted_arms")
-            if not attempted_arms:
-                attempted_arms = metadata.get("adaptive_attempted_arms")
             if isinstance(attempted_arms, list) and attempted_arms:
                 return [str(arm_id) for arm_id in attempted_arms]
         selection_reason = getattr(record, "selection_reason", None)
         if isinstance(selection_reason, dict):
             attempted_arms = selection_reason.get("bara_execution_trace")
-            if not attempted_arms:
-                attempted_arms = selection_reason.get("order_run_execution_trace")
             if isinstance(attempted_arms, list) and attempted_arms:
                 return [
                     str(item.get("arm_id"))

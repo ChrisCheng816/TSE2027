@@ -79,13 +79,13 @@ Useful options:
 
 ## Results
 
-Results use repository-relative paths. Each experiment bucket contains one subdirectory per model.
+Results use repository-relative paths. Each experiment bucket is grouped by dataset, feedback setting, and model.
 
-- `results/main/pass_only/`: canonical pass-only BARA, Uniform seed 0, Static seed 0, and single-workflow results.
-- `results/main/token_aware/`: corresponding main token-aware results.
-- `results/repeated_sampling/`: repeated-sampling baselines grouped by model and workflow (`direct_coding`, `plan_structured_coding`, and `test_guided_repair`).
-- `results/seeds/pass_only/`: pass-only BARA task-order seeds, including BARA seed 0, plus nonzero Uniform and Static seeds.
-- `results/seeds/token_aware/`: corresponding token-aware seeded results.
+- `results/main/<dataset>/pass_only/`: canonical pass-only BARA, Uniform seed 0, Static seed 0, and single-workflow results.
+- `results/main/<dataset>/token_aware/`: corresponding main token-aware results.
+- `results/repeated_sampling/<dataset>/`: repeated-sampling baselines grouped by model and workflow (`direct_coding`, `plan_structured_coding`, and `test_guided_repair`).
+- `results/seeds/<dataset>/pass_only/`: pass-only BARA task-order seeds, including BARA seed 0, plus nonzero Uniform and Static seeds.
+- `results/seeds/<dataset>/token_aware/`: corresponding token-aware seeded results.
 - `results/sensitivity/pass_only/`: pass-only neighborhood-size sensitivity results.
 - `results/sensitivity/token_aware/`: token-aware neighborhood-size sensitivity results.
 - `results/ablation/pass_only/`: budget-allocation ablations.
@@ -180,4 +180,3 @@ Rules:
 `[Task]`
 {task_prompt}
 ````
-

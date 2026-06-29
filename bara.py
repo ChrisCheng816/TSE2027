@@ -593,12 +593,10 @@ class KNNRewardSumUCBSelector:
         )
 
     def _counts_as_first_arm_pull(self, metadata: dict[str, Any]) -> bool:
-        if metadata.get("bara") is True or metadata.get("order_run") is True:
+        if metadata.get("bara") is True:
             if metadata.get("bara_is_first_attempt") is not None:
                 return bool(metadata.get("bara_is_first_attempt"))
-            if metadata.get("order_run_is_first_attempt") is not None:
-                return bool(metadata.get("order_run_is_first_attempt"))
-            rank = metadata.get("bara_rank", metadata.get("order_run_rank"))
+            rank = metadata.get("bara_rank")
             if rank is not None:
                 try:
                     return int(rank) == 1

@@ -54,8 +54,26 @@ def results_dataset_bucket(dataset_name: str, *, token_optimized: bool = False) 
     if "livecodebench" in normalized_dataset_name:
         return "livecodebench/token_aware" if token_optimized else "livecodebench/pass_only"
     if "bigcodebench" in normalized_dataset_name:
+        return "bigcodebench/token_aware" if token_optimized else "bigcodebench/pass_only"
+    return None
+
+
+def single_dataset_results_bucket(dataset_name: str, *, token_optimized: bool = False) -> str | None:
+    normalized_dataset_name = dataset_name.lower().replace("_", "-")
+    if "livecodebench" in normalized_dataset_name:
+        return "livecodebench/token_aware" if token_optimized else "livecodebench/pass_only"
+    if "bigcodebench" in normalized_dataset_name:
         return "token_aware" if token_optimized else "pass_only"
     return None
+
+
+def repeated_sampling_dataset_bucket(dataset_name: str) -> str:
+    normalized_dataset_name = dataset_name.lower().replace("_", "-")
+    if "livecodebench" in normalized_dataset_name:
+        return "livecodebench"
+    if "bigcodebench" in normalized_dataset_name:
+        return "bigcodebench"
+    return normalized_dataset_name
 
 
 @dataclass(frozen=True)
@@ -65,7 +83,10 @@ class PathConfig:
     seed_results_dir: Path | None = None
 
     def dataset_results_dir(self, dataset_name: str, *, token_optimized: bool = False) -> Path:
-        dataset_bucket = results_dataset_bucket(dataset_name, token_optimized=token_optimized)
+        if self.experiment_results_dir.name in {"ablation", "sensitivity"}:
+            dataset_bucket = single_dataset_results_bucket(dataset_name, token_optimized=token_optimized)
+        else:
+            dataset_bucket = results_dataset_bucket(dataset_name, token_optimized=token_optimized)
         if dataset_bucket is None:
             return self.experiment_results_dir
         return self.experiment_results_dir / dataset_bucket
@@ -90,7 +111,8 @@ class PathConfig:
 
     def repeated_sampling_model_results_dir(self, model_name: str, arm_id: str, dataset_name: str) -> Path:
         workflow_slug = repeated_sampling_workflow_slug(arm_id)
-        return self.repeated_sampling_results_dir / model_name / workflow_slug
+        dataset_bucket = repeated_sampling_dataset_bucket(dataset_name)
+        return self.repeated_sampling_results_dir / dataset_bucket / model_name / workflow_slug
 
     def repeated_sampling_output_path(
         self,

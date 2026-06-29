@@ -215,27 +215,7 @@ class ExperimentRunner:
                         actual_total_tokens=actual_total_tokens,
                     )
                 solved = not over_allocated_cap and bool((arm_steps[-1].evaluation or {}).get("passed"))
-                annotated_steps = [
-                    replace(
-                        step,
-                        details={
-                            **dict(step.details),
-                            "repeated_sampling": True,
-                            "repeated_sampling_attempt_index": attempt_index,
-                            "repeated_sampling_allocated_token_cap": allocated_cap,
-                            "repeated_sampling_actual_completion_tokens": actual_completion_tokens,
-                            "repeated_sampling_actual_accounted_completion_tokens": actual_accounted_completion_tokens,
-                            "repeated_sampling_actual_total_tokens": actual_total_tokens,
-                            "repeated_sampling_actual_knn_total_tokens": actual_knn_total_tokens,
-                            "repeated_sampling_charged_token_usage": charged_token_usage,
-                            "repeated_sampling_over_allocated_token_cap": over_allocated_cap,
-                            "repeated_sampling_remaining_budget_before": remaining_budget,
-                            "repeated_sampling_remaining_budget_after": max(remaining_budget - charged_token_usage, 0),
-                        },
-                    )
-                    for step in arm_steps
-                ]
-                combined_steps.extend(annotated_steps)
+                combined_steps.extend(arm_steps)
                 execution_trace.append(
                     {
                         "arm_id": arm.arm_id,
@@ -267,13 +247,6 @@ class ExperimentRunner:
                     "pipeline_stage": arm.stage,
                     "reward_formula": _reward_formula_description(self.reward_config),
                     "reward_weights": _reward_weight_dict(self.reward_config),
-                    "repeated_sampling": True,
-                    "repeated_sampling_execution_trace": execution_trace,
-                    "repeated_sampling_attempt_count": attempt_index,
-                    "repeated_sampling_remaining_budget": remaining_budget,
-                    "repeated_sampling_over_allocated_token_cap": any(
-                        e["over_allocated_token_cap"] for e in execution_trace
-                    ),
                 },
                 completion_token_budget_override=task_budget,
             )

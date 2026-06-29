@@ -184,7 +184,7 @@ def load_run(path: Path, *, single_arm_budget: int | None = None) -> RunArrays:
             else:
                 solved = 1.0 if passed else 0.0
 
-            summary = row.get("bara_summary") or row.get("order_run_summary") or {}
+            summary = row.get("bara_summary") or {}
             trace = summary.get("trace") or []
             if summary.get("solved_rank") is not None:
                 first = 1.0 if int(summary["solved_rank"]) == 1 else 0.0
@@ -254,9 +254,26 @@ def glob_one(root: Path, pattern: str) -> Path:
     return paths[0]
 
 
+def results_dataset_bucket(dataset: str, bucket: str) -> str:
+    normalized_dataset = dataset.lower().replace("_", "-")
+    if "livecodebench" in normalized_dataset:
+        return f"livecodebench/{bucket}"
+    if "bigcodebench" in normalized_dataset:
+        return f"bigcodebench/{bucket}"
+    return bucket
+
+
+def single_dataset_results_bucket(dataset: str, bucket: str) -> str:
+    normalized_dataset = dataset.lower().replace("_", "-")
+    if "livecodebench" in normalized_dataset:
+        return f"livecodebench/{bucket}"
+    return bucket
+
+
 def bara_runs(repo_root: Path, bucket: str, model: str, budget: int, dataset: str) -> list[RunArrays]:
-    main_root = repo_root / "results" / "main" / bucket / model
-    shuffle_root = repo_root / "results" / "seeds" / bucket / model
+    dataset_bucket = results_dataset_bucket(dataset, bucket)
+    main_root = repo_root / "results" / "main" / dataset_bucket / model
+    shuffle_root = repo_root / "results" / "seeds" / dataset_bucket / model
     paths = sorted(main_root.glob(f"{model}_bara_budget-{budget}.jsonl"))
     paths += sorted(shuffle_root.glob(f"{model}_bara_seed*_budget-{budget}.jsonl"))
     if len(paths) != 11:
@@ -265,16 +282,18 @@ def bara_runs(repo_root: Path, bucket: str, model: str, budget: int, dataset: st
 
 
 def static_runs(repo_root: Path, model: str, budget: int, dataset: str) -> list[RunArrays]:
-    main_root = repo_root / "results" / "main" / "pass_only" / model
-    shuffle_root = repo_root / "results" / "seeds" / "pass_only" / model
+    dataset_bucket = results_dataset_bucket(dataset, "pass_only")
+    main_root = repo_root / "results" / "main" / dataset_bucket / model
+    shuffle_root = repo_root / "results" / "seeds" / dataset_bucket / model
     paths = sorted(main_root.glob(f"{model}_static_order*_budget-{budget}.jsonl"))
     paths += sorted(shuffle_root.glob(f"{model}_static_order*_budget-{budget}.jsonl"))
     return [load_run(path) for path in paths]
 
 
 def uniform_runs(repo_root: Path, model: str, budget: int, dataset: str) -> list[RunArrays]:
-    main_root = repo_root / "results" / "main" / "pass_only" / model
-    shuffle_root = repo_root / "results" / "seeds" / "pass_only" / model
+    dataset_bucket = results_dataset_bucket(dataset, "pass_only")
+    main_root = repo_root / "results" / "main" / dataset_bucket / model
+    shuffle_root = repo_root / "results" / "seeds" / dataset_bucket / model
     paths = sorted(main_root.glob(f"{model}_uniform_budget-{budget}.jsonl"))
     paths += sorted(shuffle_root.glob(f"{model}_uniform_seed*_budget-{budget}.jsonl"))
     return [load_run(path) for path in paths]
@@ -416,9 +435,16 @@ def choice_from_runs(name: str, runs: Iterable[RunArrays], metric: str, table_pt
 
 def repeated_sampling_choices(root: Path, model: str, budget: int, dataset: str) -> list[SeriesChoice]:
     choices = []
+    normalized_dataset = dataset.lower().replace("_", "-")
+    if "livecodebench" in normalized_dataset:
+        dataset_bucket = "livecodebench"
+    elif "bigcodebench" in normalized_dataset:
+        dataset_bucket = "bigcodebench"
+    else:
+        dataset_bucket = normalized_dataset
     for workflow, label in REPEATED_WORKFLOW_LABEL.items():
         path = glob_one(
-            root / model / workflow,
+            root / dataset_bucket / model / workflow,
             f"{model}_{workflow}_{dataset}_budget-{budget}.jsonl",
         )
         run = load_run(path)
@@ -429,9 +455,9 @@ def repeated_sampling_choices(root: Path, model: str, budget: int, dataset: str)
     return choices
 
 
-def single_arm_choices(repo_root: Path, model: str, budget: int) -> list[SeriesChoice]:
+def single_arm_choices(repo_root: Path, model: str, budget: int, dataset: str) -> list[SeriesChoice]:
     choices = []
-    root = repo_root / "results" / "main" / "pass_only" / model
+    root = repo_root / "results" / "main" / results_dataset_bucket(dataset, "pass_only") / model
     for arm_id, label in SINGLE_ARM_LABEL.items():
         path = root / f"{model}_{arm_id}.jsonl"
         run = load_run(path, single_arm_budget=budget)
@@ -639,7 +665,7 @@ def build_rq1_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[d
                 RQ2_TABLE[model]["BARA"]["solve"][idx],
             )
             best_single = max(
-                single_arm_choices(args.repo_root, model, budget),
+                single_arm_choices(args.repo_root, model, budget, args.dataset_name),
                 key=lambda choice: choice.actual_pt,
             )
             best_repeated = max(
@@ -702,7 +728,7 @@ def build_rq2_rows(args: argparse.Namespace, rng: np.random.Generator) -> list[d
 
 def allocator_run(args: argparse.Namespace, model: str, budget: int, policy_label: str) -> RunArrays:
     policy = ALLOCATOR_FILE[policy_label]
-    root = args.repo_root / "results" / "ablation" / "pass_only" / model
+    root = args.repo_root / "results" / "ablation" / single_dataset_results_bucket(args.dataset_name, "pass_only") / model
     path = glob_one(root, f"{model}_allocator-{policy}_bara_budget-{budget}.jsonl")
     return load_run(path)
 

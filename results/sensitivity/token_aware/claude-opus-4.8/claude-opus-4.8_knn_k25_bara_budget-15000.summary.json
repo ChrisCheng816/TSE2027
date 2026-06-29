@@ -36,7 +36,7 @@
     "A2": 11081.63453815261,
     "A1": 8957.115151515152
   },
-  "order_run_arm_attempt_position_counts": {
+  "bara_arm_attempt_position_counts": {
     "A0": {
       "first": 1093,
       "second": 10,

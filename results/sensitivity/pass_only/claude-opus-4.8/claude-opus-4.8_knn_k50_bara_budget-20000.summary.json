@@ -36,7 +36,7 @@
     "A2": 7392.9934554973825,
     "A1": 9780.55462184874
   },
-  "order_run_arm_attempt_position_counts": {
+  "bara_arm_attempt_position_counts": {
     "A0": {
       "first": 20,
       "second": 53,
