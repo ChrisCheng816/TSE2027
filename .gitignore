@@ -8,3 +8,4 @@ venv/
 logs/
 cache/
 tests/
+other/

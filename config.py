@@ -252,7 +252,7 @@ class EmbeddingConfig:
     qwen_model_name: str = "Qwen/Qwen3-Embedding-0.6B"
     qwen_output_dim: int = 1024
     qwen_task_instruction: str = "Embed this programming task for adaptive code-generation arm routing."
-    qwen_cuda_visible_devices: str = "2"
+    qwen_cuda_visible_devices: str = "3"
     qwen_gpu_memory_utilization: float = 0.1
     cache_dir: Path = PROJECT_ROOT / ".cache" / "qwen_embeddings"
 
