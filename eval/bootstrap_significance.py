@@ -128,6 +128,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-name", default=DATASET)
     parser.add_argument("--models", nargs="+", default=list(DEFAULT_MODELS))
     parser.add_argument("--budget", type=int, nargs="+", default=list(DEFAULT_BUDGETS))
+    parser.add_argument("--rq", nargs="+", choices=("rq1", "rq2", "rq3", "rq4"), default=("rq1", "rq2", "rq3", "rq4"))
     parser.add_argument("--bootstrap-samples", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--repeated-sampling-root", type=Path, default=DEFAULT_REPEATED_SAMPLING_ROOT)
@@ -178,11 +179,13 @@ def load_run(path: Path, *, single_arm_budget: int | None = None) -> RunArrays:
             seen.add(task_id)
 
             passed = float(row.get("pass_at_k") or row.get("passed") or row.get("reward") or 0.0) > 0.0
+            total_tokens = float(row.get("total_tokens") or 0.0)
             if single_arm_budget is not None:
-                accounted = float(row.get("prompt_tokens") or 0.0) + 4.0 * float(row.get("completion_tokens") or 0.0)
-                solved = 1.0 if passed and accounted <= float(single_arm_budget) else 0.0
+                solved = 1.0 if passed and total_tokens <= float(single_arm_budget) else 0.0
+                row_cost = min(total_tokens, float(single_arm_budget))
             else:
                 solved = 1.0 if passed else 0.0
+                row_cost = total_tokens
 
             summary = row.get("bara_summary") or {}
             trace = summary.get("trace") or []
@@ -206,7 +209,7 @@ def load_run(path: Path, *, single_arm_budget: int | None = None) -> RunArrays:
             task_ids.append(task_id)
             solve.append(solved)
             firsthit.append(first)
-            cost.append(float(row.get("total_tokens") or 0.0) / 1000.0)
+            cost.append(row_cost / 1000.0)
 
     order = np.array([i for i, _ in sorted(enumerate(task_ids), key=lambda item: task_sort_key(item[1]))])
     return RunArrays(
@@ -826,20 +829,17 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(int(args.seed))
 
-    rq1 = build_rq1_rows(args, rng)
-    rq2 = build_rq2_rows(args, rng)
-    rq3 = build_rq3_rows(args, rng)
-    rq4 = build_rq4_rows(args, rng)
-
-    write_csv(output_dir / "rq1_bootstrap.csv", rq1)
-    write_csv(output_dir / "rq2_bootstrap.csv", rq2)
-    write_csv(output_dir / "rq3_bootstrap.csv", rq3)
-    write_csv(output_dir / "rq4_bootstrap.csv", rq4)
-
-    print(f"Wrote {output_dir / 'rq1_bootstrap.csv'}")
-    print(f"Wrote {output_dir / 'rq2_bootstrap.csv'}")
-    print(f"Wrote {output_dir / 'rq3_bootstrap.csv'}")
-    print(f"Wrote {output_dir / 'rq4_bootstrap.csv'}")
+    builders = {
+        "rq1": build_rq1_rows,
+        "rq2": build_rq2_rows,
+        "rq3": build_rq3_rows,
+        "rq4": build_rq4_rows,
+    }
+    for rq in args.rq:
+        rows = builders[rq](args, rng)
+        path = output_dir / f"{rq}_bootstrap.csv"
+        write_csv(path, rows)
+        print(f"Wrote {path}")
     return 0
 
 
