@@ -14,9 +14,9 @@ from .bara import (
     normalize_selector_algorithm,
 )
 from .config import (
-    DEFAULT_ABLATION_RESULTS_DIR,
     DEFAULT_EXPERIMENT_CONFIG,
     ExperimentConfig,
+    PathConfig,
     bara_per_task_completion_token_budget,
     format_bara_arm_ids,
     format_budget_group_label,
@@ -142,6 +142,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--cuda-visible-devices",
         default=None,
         help="Optional CUDA_VISIBLE_DEVICES override for this run, e.g. '2,3'.",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=None,
+        help=(
+            "Optional root for all result outputs. Writes main/, seeds/, ablation/, "
+            "and repeated_sampling/ below this root. Defaults to the repository results/ tree."
+        ),
     )
     parser.add_argument(
         "--then-bara",
@@ -343,6 +352,16 @@ def _resolve_config(
     elif getattr(args, "t", None) is not None:
         raise ValueError("--t is only supported with --run-mode repeated_sampling.")
 
+    paths_config = config.paths
+    if getattr(args, "output_root", None) is not None:
+        output_root = Path(args.output_root)
+        paths_config = PathConfig(
+            experiment_results_dir=output_root / "main",
+            repeated_sampling_results_dir=output_root / "repeated_sampling",
+            ablation_results_dir=output_root / "ablation",
+            seed_results_dir=output_root / "seeds",
+        )
+
     return replace(
         config,
         run_mode=resolved_run_mode,
@@ -353,6 +372,7 @@ def _resolve_config(
         limit=args.limit if args.limit is not None else config.limit,
         task_order_seed=task_order_seed,
         model=model_config,
+        paths=paths_config,
         bandit=bandit_config,
         bara=bara_config,
         vllm=vllm_config,
@@ -598,7 +618,7 @@ def _bara_output_path(*, config: ExperimentConfig, budget_label: str | None) -> 
     allocator_prefix = _bara_allocator_prefix(config)
     use_seed_results = seed is not None and (variant == "bara" or seed != 0)
     if allocator_prefix:
-        results_root = DEFAULT_ABLATION_RESULTS_DIR
+        results_root = config.paths.ablation_results_dir
     elif use_seed_results:
         results_root = config.paths.seed_results_dir
         if results_root is None:

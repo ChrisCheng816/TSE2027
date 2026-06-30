@@ -76,6 +76,7 @@ Useful options:
 - `--budget 10000`, `15000`, or `20000` sets the per-task token budget.
 - `--seeds 0 1 2` runs independent task-order seeds.
 - `--cuda-visible-devices 0,1,2,3` selects CUDA devices for local vLLM runs.
+- `--output-root /path/to/results` redirects `main/`, `seeds/`, `ablation/`, and `repeated_sampling/` outputs below a custom root.
 
 ## Results
 

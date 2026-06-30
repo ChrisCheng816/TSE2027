@@ -80,6 +80,7 @@ def repeated_sampling_dataset_bucket(dataset_name: str) -> str:
 class PathConfig:
     experiment_results_dir: Path = DEFAULT_EXPERIMENT_RESULTS_DIR
     repeated_sampling_results_dir: Path = DEFAULT_REPEATED_SAMPLING_RESULTS_DIR
+    ablation_results_dir: Path = DEFAULT_ABLATION_RESULTS_DIR
     seed_results_dir: Path | None = None
 
     def dataset_results_dir(self, dataset_name: str, *, token_optimized: bool = False) -> Path:
