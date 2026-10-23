@@ -181,3 +181,67 @@ Rules:
 `[Task]`
 {task_prompt}
 ````
+
+## Supplementary Material for BARA
+
+### A. Comparison with Related Paradigms
+
+Table A1 contrasts BARA with LLM routing, cascade execution, and algorithm portfolios along the dimensions raised in the reviews.
+
+| Dimension                       | LLM Routing           | Cascade Execution       | Algorithm Portfolio     | BARA                               |
+| ------------------------------- | --------------------- | ----------------------- | ----------------------- | ---------------------------------- |
+| Candidate type                  | Models                | Models                  | Solvers / prompts       | Inference workflows                |
+| Selection scope                 | Single call           | Sequential, fixed order | One-shot, fixed mapping | Sequential, task-conditioned order |
+| Task-level budget allocation    | No                    | No                      | No                      | Yes, per-attempt caps              |
+| Workflow-specific cost modeling | No                    | No                      | No                      | Yes, censored log-normal           |
+| Online adaptation               | Sometimes             | No                      | No                      | Yes, prequential evidence store    |
+| Intermediate execution feedback | No                    | No                      | Rarely                  | Yes, accept/reject + token cost    |
+| Optimization objective          | Cost-quality tradeoff | Cost reduction          | Solve rate              | Solve rate under fixed budget      |
+
+**Table A1.** Comparison of BARA with related paradigms. BARA is the only method that jointly addresses task-conditioned ordering, per-attempt budget allocation, censored cost modeling, and online adaptation in a single framework.
+
+### B. End-to-End Pseudocode
+
+The following pseudocode describes the full BARA policy for one task episode. Equation references refer to the paper.
+
+```text
+Input:  task x, budget B, workflow pool G, evidence store D, neighborhood size k
+Output: accepted solution or failure
+
+1.  phi(x) <- Embed(x)                          // task representation
+2.  N_k(x) <- kNN(phi(x), D, k)                 // retrieve k similar tasks
+3.  for each g in G:
+4.      I_g(x) <- {i in N_k(x) : g was executed on x_i}
+5.      if |I_g(x)| > 0:
+6.          mu_g(x) <- mean utility of g over I_g(x)  // Eq. (4)
+7.      else:
+8.          mu_g(x) <- 0
+9.  sigma(x) <- sort G by descending mu_g(x)    // workflow ranking
+        (ties broken uniformly at random;
+         least-executed workflow placed first during coverage phase)
+10. R <- B                                       // remaining budget
+11. A <- {}                                      // attempted workflows
+12. for j = 1, 2, ..., |G|:
+13.     g_j <- sigma(x)[j]
+14.     if R <= 0: break
+15.     if j < |G|:
+16.         fit log-normal (m_g, s_g) from censored costs in N_k(x) for g_j  // Eq. (5)
+17.         b_j <- min(F^{-1}_{g_j}(1 - epsilon), R)                         // Eq. (6-7)
+18.     else:
+19.         b_j <- R                             // last workflow gets all remaining budget
+20.     (c_j, outcome_j) <- Execute(g_j, x, b_j)   // run workflow under cap
+21.     charged <- min(c_j, b_j)
+22.     R <- R - charged
+23.     A <- A union {g_j}
+24.     u_j <- ComputeUtility(outcome_j, charged, B)  // Eq. (3), PO or TA
+25.     D <- D union {(x, g_j, b_j, delta_j, charged, outcome_j)}  // update evidence
+26.     if outcome_j == accepted:
+27.         return solution
+28. return failure
+```
+
+**Notes.**
+
+- Line 9: during the coverage phase, the least-executed workflow is placed first until every workflow has at least n_0 = 20 first-position executions.
+- Line 16: when fewer than a minimum number of usable observations are available for g_j, the allocator falls back to a prior weight split of 1:1:2 for Direct Coding, Plan-Structured Coding, and Test-Guided Repair respectively.
+- Line 20: delta_j = 1 if execution completes before reaching b_j (exact cost observed), delta_j = 0 if truncated (cost right-censored at b_j).
